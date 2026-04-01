@@ -6,51 +6,423 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const API_SECRET = process.env.API_SECRET;
 
+const DEFAULT_INCLUDE = {
+  details: true,
+  votes: true,
+  favorites: true,
+  icons: true
+};
+
+function getRequestSecret(req) {
+  const headerSecret = req.headers["x-api-secret"];
+  if (headerSecret) {
+    return headerSecret;
+  }
+
+  const authHeader = req.headers.authorization;
+  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7);
+  }
+
+  return null;
+}
+
+function requireAuth(req, res) {
+  if (!API_SECRET) {
+    res.status(500).json({
+      error: "API secret is not configured on the server"
+    });
+    return false;
+  }
+
+  const secret = getRequestSecret(req);
+  if (secret !== API_SECRET) {
+    res.status(401).json({ error: "Unauthorized" });
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeInclude(input = {}) {
+  const includeAll = input.includeAll === true;
+
+  return {
+    details: includeAll || input.details !== false,
+    votes: includeAll || input.votes !== false,
+    favorites: includeAll || input.favorites !== false,
+    icons: includeAll || input.icons !== false
+  };
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function fetchText(url) {
+  const response = await fetch(url);
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Roblox API ${response.status}: ${text}`);
+  }
+
+  return text;
+}
+
+async function fetchJson(url) {
+  return JSON.parse(await fetchText(url));
+}
+
+async function getOwnedGames(ownerUserId, limit = 100) {
+  let cursor = "";
+  const games = [];
+
+  do {
+    const page = await fetchJson(
+      `https://games.roblox.com/v2/users/${ownerUserId}/games?accessFilter=Public&limit=${limit}&sortOrder=Asc${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`
+    );
+
+    games.push(...(page.data || []));
+    cursor = page.nextPageCursor || "";
+  } while (cursor);
+
+  return games.map((game) => ({
+    id: game.id,
+    universeId: game.id,
+    rootPlaceId: game.rootPlaceId ?? null,
+    name: game.name ?? "Unknown"
+  }));
+}
+
+async function getGameDetails(universeIds) {
+  const detailsMap = new Map();
+  const chunks = chunkArray(universeIds, 100);
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const data = await fetchJson(
+        `https://games.roblox.com/v1/games?universeIds=${chunk.join(",")}`
+      );
+
+      for (const game of data.data || []) {
+        detailsMap.set(game.id, game);
+      }
+    })
+  );
+
+  return detailsMap;
+}
+
+async function getGameVotes(universeIds) {
+  const votesMap = new Map();
+  const chunks = chunkArray(universeIds, 100);
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const data = await fetchJson(
+        `https://games.roblox.com/v1/games/votes?universeIds=${chunk.join(",")}`
+      );
+
+      for (const vote of data.data || []) {
+        votesMap.set(vote.id, vote);
+      }
+    })
+  );
+
+  return votesMap;
+}
+
+async function getGameFavorites(universeIds) {
+  const favoritesEntries = await Promise.all(
+    universeIds.map(async (universeId) => {
+      const data = await fetchJson(
+        `https://games.roblox.com/v1/games/${universeId}/favorites/count`
+      );
+
+      return [universeId, data.favoritesCount ?? 0];
+    })
+  );
+
+  return new Map(favoritesEntries);
+}
+
+async function getGameIcons(universeIds) {
+  const iconsMap = new Map();
+  const chunks = chunkArray(universeIds, 100);
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const data = await fetchJson(
+        `https://thumbnails.roblox.com/v1/games/icons?universeIds=${chunk.join(",")}&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false`
+      );
+
+      for (const icon of data.data || []) {
+        iconsMap.set(icon.targetId, icon.imageUrl ?? null);
+      }
+    })
+  );
+
+  return iconsMap;
+}
+
+function buildGameRecord(baseGame, detail, vote, favoritesCount, iconUrl) {
+  const upVotes = vote?.upVotes ?? 0;
+  const downVotes = vote?.downVotes ?? 0;
+  const totalVotes = upVotes + downVotes;
+  const likeRatio = totalVotes > 0 ? upVotes / totalVotes : null;
+  const created = detail?.created ?? null;
+  const updated = detail?.updated ?? null;
+
+  return {
+    universeId: baseGame.universeId,
+    rootPlaceId: baseGame.rootPlaceId,
+    name: detail?.name ?? baseGame.name,
+    description: detail?.description ?? "",
+    sourceName: baseGame.name,
+    creator: detail?.creator ?? null,
+    price: detail?.price ?? null,
+    allowedGearGenres: detail?.allowedGearGenres ?? [],
+    allowedGearCategories: detail?.allowedGearCategories ?? [],
+    isGenreEnforced: detail?.isGenreEnforced ?? false,
+    copyingAllowed: detail?.copyingAllowed ?? false,
+    playing: detail?.playing ?? 0,
+    visits: detail?.visits ?? 0,
+    maxPlayers: detail?.maxPlayers ?? null,
+    created,
+    published: created,
+    updated,
+    lastUpdated: updated,
+    studioAccessToApisAllowed: detail?.studioAccessToApisAllowed ?? false,
+    createVipServersAllowed: detail?.createVipServersAllowed ?? false,
+    universeAvatarType: detail?.universeAvatarType ?? null,
+    genre: detail?.genre ?? null,
+    isAllGenre: detail?.isAllGenre ?? false,
+    isFavoritedByUser: detail?.isFavoritedByUser ?? false,
+    favoritedCount: favoritesCount ?? 0,
+    iconImageUrl: iconUrl ?? null,
+    likes: upVotes,
+    dislikes: downVotes,
+    totalVotes,
+    likeRatio,
+    voteData: vote
+      ? {
+          upVotes,
+          downVotes
+        }
+      : null,
+    timestamps: {
+      created,
+      published: created,
+      updated,
+      lastUpdated: updated
+    },
+    metrics: {
+      playing: detail?.playing ?? 0,
+      visits: detail?.visits ?? 0,
+      favorites: favoritesCount ?? 0,
+      likes: upVotes,
+      dislikes: downVotes,
+      totalVotes,
+      likeRatio
+    },
+    raw: {
+      detail: detail ?? null,
+      vote: vote ?? null
+    }
+  };
+}
+
+async function buildOwnerGamesResponse(ownerUserId, include = DEFAULT_INCLUDE) {
+  const baseGames = await getOwnedGames(ownerUserId);
+  const universeIds = baseGames.map((game) => game.universeId);
+
+  if (universeIds.length === 0) {
+    return {
+      ownerUserId,
+      totalGames: 0,
+      requestedAt: new Date().toISOString(),
+      include,
+      games: []
+    };
+  }
+
+  const [detailsMap, votesMap, favoritesMap, iconsMap] = await Promise.all([
+    include.details ? getGameDetails(universeIds) : Promise.resolve(new Map()),
+    include.votes ? getGameVotes(universeIds) : Promise.resolve(new Map()),
+    include.favorites ? getGameFavorites(universeIds) : Promise.resolve(new Map()),
+    include.icons ? getGameIcons(universeIds) : Promise.resolve(new Map())
+  ]);
+
+  const games = baseGames.map((game) =>
+    buildGameRecord(
+      game,
+      detailsMap.get(game.universeId),
+      votesMap.get(game.universeId),
+      favoritesMap.get(game.universeId),
+      iconsMap.get(game.universeId)
+    )
+  );
+
+  return {
+    ownerUserId,
+    totalGames: games.length,
+    requestedAt: new Date().toISOString(),
+    include,
+    games
+  };
+}
+
+function docsHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fetcher API Documentation</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #121b2d;
+      --muted: #9fb0cf;
+      --text: #e8eefc;
+      --accent: #72e1d1;
+      --line: #24314a;
+      --code: #0d1526;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background: radial-gradient(circle at top, #182542 0%, var(--bg) 55%);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 48px 20px 72px;
+    }
+    .hero, .card {
+      background: rgba(18, 27, 45, 0.88);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 28px;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+    }
+    .hero { margin-bottom: 22px; }
+    .card { margin-top: 18px; }
+    h1, h2, h3 { margin: 0 0 12px; }
+    h1 { font-size: 2.4rem; }
+    h2 { font-size: 1.35rem; color: var(--accent); }
+    p, li { color: var(--muted); }
+    code, pre {
+      font-family: Consolas, Monaco, monospace;
+      background: var(--code);
+    }
+    code {
+      padding: 2px 6px;
+      border-radius: 6px;
+      color: #d9fff7;
+    }
+    pre {
+      padding: 16px;
+      overflow: auto;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+    }
+    a { color: var(--accent); }
+    ul { padding-left: 20px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>Fetcher API</h1>
+      <p>A formal Roblox owner-game aggregation API for server-side tooling, in-experience scripts, and automation workflows.</p>
+      <p>Authentication is required on protected routes. Send either <code>x-api-secret</code> or <code>Authorization: Bearer &lt;secret&gt;</code>.</p>
+    </section>
+
+    <section class="card">
+      <h2>Endpoints</h2>
+      <ul>
+        <li><code>GET /</code> returns a service summary.</li>
+        <li><code>GET /health</code> returns service health and secret configuration state.</li>
+        <li><code>GET /docs</code> returns this HTML documentation page.</li>
+        <li><code>POST /owner-games</code> returns an owner's public Roblox games with extended metadata.</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Request Example</h2>
+      <pre>{
+  "ownerUserId": 123456789,
+  "includeAll": true
+}</pre>
+    </section>
+
+    <section class="card">
+      <h2>Response Highlights</h2>
+      <ul>
+        <li><code>ownerUserId</code>: the user whose public games were resolved.</li>
+        <li><code>totalGames</code>: total returned game count.</li>
+        <li><code>games[].likes</code> and <code>games[].dislikes</code>: Roblox vote counts.</li>
+        <li><code>games[].favoritedCount</code>: Roblox favorites count.</li>
+        <li><code>games[].visits</code>, <code>games[].playing</code>, <code>games[].maxPlayers</code>: traffic and concurrency metadata.</li>
+        <li><code>games[].iconImageUrl</code>: resolved game icon.</li>
+      </ul>
+    </section>
+  </div>
+</body>
+</html>`;
+}
+
 app.get("/", (req, res) => {
-  res.send("API is running");
+  res.json({
+    name: "Fetcher API",
+    version: "2.0.0",
+    status: "online",
+    docs: "/docs",
+    health: "/health",
+    endpoints: ["/owner-games"]
+  });
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    secretConfigured: Boolean(API_SECRET),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get("/docs", (req, res) => {
+  res.type("html").send(docsHtml());
 });
 
 app.post("/owner-games", async (req, res) => {
-  try {
-    const secret = req.headers["x-api-secret"];
-    if (secret !== API_SECRET) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+  if (!requireAuth(req, res)) {
+    return;
+  }
 
-    const { ownerUserId } = req.body;
+  try {
+    const { ownerUserId, include = DEFAULT_INCLUDE } = req.body || {};
 
     if (!ownerUserId) {
       return res.status(400).json({ error: "Missing ownerUserId" });
     }
 
-    const response = await fetch(
-      `https://games.roblox.com/v2/users/${ownerUserId}/games`
-    );
-
-    if (!response.ok) {
-      const text = await response.text();
-      return res.status(response.status).json({
-        error: "Roblox API failed",
-        details: text
-      });
-    }
-
-    const data = await response.json();
-
-    const games = (data.data || []).map((g) => ({
-      universeId: g.id,
-      name: g.name,
-      rootPlaceId: g.rootPlaceId ?? null
-    }));
-
-    res.json({
-      ownerUserId,
-      games
-    });
-  } catch (err) {
-    res.status(500).json({
+    const response = await buildOwnerGamesResponse(ownerUserId, normalizeInclude(include));
+    return res.json(response);
+  } catch (error) {
+    return res.status(500).json({
       error: "Server error",
-      details: String(err)
+      details: String(error)
     });
   }
 });
