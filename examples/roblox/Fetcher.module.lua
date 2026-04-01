@@ -75,6 +75,19 @@ local function getPlayerScriptsContainer(player)
 	return player:WaitForChild("PlayerScripts", 10)
 end
 
+local function findChildByNameAndClass(parent, objectName, className)
+	if not parent then
+		return nil
+	end
+
+	local child = parent:FindFirstChild(objectName)
+	if child and child.ClassName == className then
+		return child
+	end
+
+	return nil
+end
+
 local function findDescendantByNameAndClass(root, objectName, className)
 	if not root then
 		return nil
@@ -278,33 +291,32 @@ function Fetcher:InjectClientBootstrap(clientBootstrapTemplate)
 	clientBootstrapTemplate.Name = self.Configuration.ClientSupport.ClientBootstrapName
 
 	local starterPlayerScripts = StarterPlayer:WaitForChild("StarterPlayerScripts")
-	local existingStarterBootstrap = starterPlayerScripts:FindFirstChild(clientBootstrapTemplate.Name)
-	if existingStarterBootstrap then
-		existingStarterBootstrap:Destroy()
+	local existingStarterBootstrap = findChildByNameAndClass(starterPlayerScripts, clientBootstrapTemplate.Name, "LocalScript")
+	if not existingStarterBootstrap then
+		local starterClone = clientBootstrapTemplate:Clone()
+		starterClone.Parent = starterPlayerScripts
 	end
-
-	local starterClone = clientBootstrapTemplate:Clone()
-	starterClone.Parent = starterPlayerScripts
 
 	for _, player in ipairs(Players:GetPlayers()) do
 		local playerScripts = getPlayerScriptsContainer(player)
 		if playerScripts then
-			local existingPlayerBootstrap = playerScripts:FindFirstChild(clientBootstrapTemplate.Name)
-			if existingPlayerBootstrap then
-				existingPlayerBootstrap:Destroy()
+			local existingPlayerBootstrap = findChildByNameAndClass(playerScripts, clientBootstrapTemplate.Name, "LocalScript")
+			if not existingPlayerBootstrap then
+				local playerClone = clientBootstrapTemplate:Clone()
+				playerClone.Parent = playerScripts
 			end
-
-			local playerClone = clientBootstrapTemplate:Clone()
-			playerClone.Parent = playerScripts
 		end
 	end
 
 	Players.PlayerAdded:Connect(function(player)
 		local playerScripts = getPlayerScriptsContainer(player)
 		if playerScripts then
-			local playerClone = clientBootstrapTemplate:Clone()
-			playerClone.Name = clientBootstrapTemplate.Name
-			playerClone.Parent = playerScripts
+			local existingPlayerBootstrap = findChildByNameAndClass(playerScripts, clientBootstrapTemplate.Name, "LocalScript")
+			if not existingPlayerBootstrap then
+				local playerClone = clientBootstrapTemplate:Clone()
+				playerClone.Name = clientBootstrapTemplate.Name
+				playerClone.Parent = playerScripts
+			end
 		end
 	end)
 
