@@ -78,7 +78,7 @@ async function fetchJson(url) {
   return JSON.parse(await fetchText(url));
 }
 
-async function getOwnedGames(ownerUserId, limit = 100) {
+async function getOwnedGames(ownerUserId, limit = 50) {
   let cursor = "";
   const games = [];
 
