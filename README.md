@@ -1,56 +1,63 @@
-# Fetcher API
+# Fetcher
 
-A Roblox metadata API that returns a user's public experiences together with useful game details like likes, favorites, visits, icons, creator info, and timestamps.
+Fetcher is a Roblox-focused metadata API with a reusable Roblox integration layer.
 
-This project is built to be easy to use from:
+The project is designed to grow into a family of fetchers under one shared system. Right now, the first implemented fetcher is:
 
-- Roblox `ServerScriptService`
-- Railway deployments
-- internal tools
-- dashboards
-- bots
+- `owner-games`
 
-## What This API Gives You
+The current Roblox integration is structured so developers can install a shared module once, then consume server and client support without manually rebuilding request logic for each script.
 
-For each public game owned by a Roblox user, Fetcher API can return:
+## Goals
 
-- game name
+Fetcher is designed to be:
+
+- modular
+- configurable
+- secure
+- friendly to require from Roblox
+- ready for future fetcher types such as game passes, badges, groups, and more
+
+## Current Fetcher
+
+### Owner Games Fetcher
+
+The Owner Games Fetcher returns a user's public Roblox experiences together with enriched metadata such as:
+
+- name
 - universe ID
 - root place ID
 - description
-- creator info
+- creator details
 - likes
 - dislikes
 - favorites count
 - visits
-- current playing count
+- live playing count
 - max players
 - icon URL
-- genre
-- avatar type
 - creation timestamp
 - published timestamp alias
 - updated timestamp
+- grouped metric and timestamp blocks
 
 ## Quick Start
-
-If you just want this working as fast as possible, follow these steps.
 
 ### 1. Deploy the API
 
 Deploy this project to Railway.
 
-### 2. Set Your Railway Secret
+### 2. Set Your Secret
 
-In Railway, open your service and add this environment variable:
+In Railway, add:
 
 ```text
 API_SECRET=your_secret_here
 ```
 
-After adding it, redeploy the service.
+Redeploy the service after saving the variable.
 
-### 3. Confirm the API Is Online
+### 3. Verify the Service
 
 Open:
 
@@ -58,7 +65,7 @@ Open:
 https://your-railway-url.up.railway.app/health
 ```
 
-You should see:
+Expected response:
 
 ```json
 {
@@ -68,8 +75,6 @@ You should see:
 }
 ```
 
-If `secretConfigured` is `false`, Railway does not have `API_SECRET` set correctly yet.
-
 ### 4. Enable HTTP Requests in Roblox
 
 In Roblox Studio:
@@ -78,165 +83,250 @@ In Roblox Studio:
 Home > Game Settings > Security > Allow HTTP Requests = ON
 ```
 
-### 5. Put This Script In ServerScriptService
+## Roblox Integration
 
-Use a normal `Script`, not a `LocalScript`.
+Fetcher now includes three Roblox example scripts:
+
+- [Fetcher.module.lua](c:\Users\arthu\Downloads\Fetcher\examples\roblox\Fetcher.module.lua)
+- [FetcherServer.server.lua](c:\Users\arthu\Downloads\Fetcher\examples\roblox\FetcherServer.server.lua)
+- [FetcherClient.client.lua](c:\Users\arthu\Downloads\Fetcher\examples\roblox\FetcherClient.client.lua)
+
+These examples are meant to work together:
+
+1. `Fetcher.module.lua` is the shared configurable module
+2. `FetcherServer.server.lua` enables secure server access and optional client support
+3. `FetcherClient.client.lua` is the client bootstrap that can be injected automatically when client support is enabled
+
+## Recommended Roblox Placement
+
+Use this structure in Studio:
+
+```text
+ReplicatedStorage
+`- Fetcher               (ModuleScript)
+
+ServerScriptService
+`- FetcherServer         (Script)
+   `- FetcherClient      (LocalScript, optional child template for injection)
+```
+
+### Why this layout
+
+- `ReplicatedStorage.Fetcher` lets both server and client `require(...)` the same module
+- `ServerScriptService.FetcherServer` keeps the API secret on the server
+- the optional child `LocalScript` lets the server automatically inject client support into players
+
+## Configuration
+
+All primary configuration lives in the module.
+
+Inside `Fetcher.module.lua`, edit:
 
 ```lua
-local HttpService = game:GetService("HttpService")
-local GroupService = game:GetService("GroupService")
-
-local BASE_URL = "https://your-railway-url.up.railway.app"
-local OWNER_GAMES_ENDPOINT = BASE_URL .. "/owner-games"
-local API_SECRET = "your_secret_here"
-
-local REQUESTED_DATA_OPTIONS = {
-	details = true,
-	votes = true,
-	favorites = true,
-	icons = true,
+Fetcher.Configuration = {
+	BaseUrl = "https://fetcher-production-2a8b.up.railway.app",
+	ApiSecret = "PASTE_YOUR_API_SECRET_HERE",
+	Include = {
+		details = true,
+		votes = true,
+		favorites = true,
+		icons = true,
+	},
+	ClientSupport = {
+		Enabled = true,
+		AutoInjectBootstrap = true,
+		ReplicatedFolderName = "Fetcher",
+		RequestFunctionName = "FetcherRequest",
+		ClientBootstrapName = "FetcherClient",
+	},
 }
+```
 
-local function decodeApiJsonResponse(responseBody)
-	local success, decodedData = pcall(function()
-		return HttpService:JSONDecode(responseBody)
-	end)
+### Configuration Fields
 
-	if not success then
-		return nil, "Failed to decode JSON response."
-	end
+| Field | Description |
+| --- | --- |
+| `BaseUrl` | Base URL of your deployed Fetcher API |
+| `ApiSecret` | Secret sent to the API from secure server calls |
+| `Include` | Default enrichment fields to request |
+| `ClientSupport.Enabled` | Enables client support through remotes |
+| `ClientSupport.AutoInjectBootstrap` | Automatically injects the client LocalScript into player scripts |
+| `ClientSupport.ReplicatedFolderName` | ReplicatedStorage folder name used for remotes |
+| `ClientSupport.RequestFunctionName` | RemoteFunction name used for client requests |
+| `ClientSupport.ClientBootstrapName` | Name used when injecting the client bootstrap |
 
-	return decodedData
-end
+## How the Three Scripts Work
 
-local function resolveExperienceOwnerUserId()
-	if game.CreatorType == Enum.CreatorType.User then
-		return game.CreatorId
-	end
+### 1. `Fetcher.module.lua`
 
-	if game.CreatorType == Enum.CreatorType.Group then
-		local success, groupInformation = pcall(function()
-			return GroupService:GetGroupInfoAsync(game.CreatorId)
-		end)
+This is the shared module that developers `require(...)`.
 
-		if not success then
-			return nil, "Failed to get group information."
-		end
+It handles:
 
-		if groupInformation and groupInformation.Owner and groupInformation.Owner.Id then
-			return groupInformation.Owner.Id
-		end
+- configuration
+- health checks
+- authenticated server requests
+- owner user ID resolution
+- owner game requests
+- optional client remote support
+- automatic LocalScript injection helpers
+- utility shaping such as building games by universe ID
 
-		return nil, "Group owner could not be resolved."
-	end
+### 2. `FetcherServer.server.lua`
 
-	return nil, "Unsupported creator type."
-end
+This is the secure server bootstrap.
 
-local function requestOwnerGameCatalog(ownerUserId)
-	local success, response = pcall(function()
-		return HttpService:RequestAsync({
-			Url = OWNER_GAMES_ENDPOINT,
-			Method = "POST",
-			Headers = {
-				["Content-Type"] = "application/json",
-				["Authorization"] = "Bearer " .. API_SECRET,
-			},
-			Body = HttpService:JSONEncode({
-				ownerUserId = ownerUserId,
-				include = REQUESTED_DATA_OPTIONS,
-			}),
-		})
-	end)
+It handles:
 
-	if not success then
-		return nil, "HTTP request crashed before the API responded."
-	end
+- checking API health
+- confirming `API_SECRET` exists on the deployed API
+- enabling client support when configured
+- injecting the client bootstrap into player scripts when configured
+- making secure owner-games requests from the server
 
-	if not response.Success then
-		return nil, "Request failed: " .. tostring(response.StatusCode) .. " | " .. tostring(response.Body)
-	end
+### 3. `FetcherClient.client.lua`
 
-	return decodeApiJsonResponse(response.Body)
-end
+This is the client bootstrap.
 
-local ownerUserId, ownerResolutionError = resolveExperienceOwnerUserId()
-if not ownerUserId then
-	warn(ownerResolutionError)
-	return
-end
+It does **not** use the API secret directly.
 
-local ownerGameCatalog, requestError = requestOwnerGameCatalog(ownerUserId)
-if not ownerGameCatalog then
+Instead, it:
+
+- requires the shared module
+- connects to the server-created RemoteFunction
+- requests supported fetcher actions through the server
+- receives the same returned data shape safely
+
+This keeps your secret protected while still giving client-side code access when you choose to enable it.
+
+## Server Setup
+
+### Step 1
+
+Place [Fetcher.module.lua](c:\Users\arthu\Downloads\Fetcher\examples\roblox\Fetcher.module.lua) into `ReplicatedStorage` and rename it to:
+
+```text
+Fetcher
+```
+
+### Step 2
+
+Place [FetcherServer.server.lua](c:\Users\arthu\Downloads\Fetcher\examples\roblox\FetcherServer.server.lua) into `ServerScriptService` and rename it to:
+
+```text
+FetcherServer
+```
+
+### Step 3
+
+If you want automatic client support injection, parent [FetcherClient.client.lua](c:\Users\arthu\Downloads\Fetcher\examples\roblox\FetcherClient.client.lua) under the server script and rename it to:
+
+```text
+FetcherClient
+```
+
+That gives you this structure:
+
+```text
+ServerScriptService
+`- FetcherServer
+   `- FetcherClient
+```
+
+When `ClientSupport.Enabled = true` and `ClientSupport.AutoInjectBootstrap = true`, the server bootstrap will clone that LocalScript into player script containers automatically.
+
+## Manual Client Setup
+
+If you do not want automatic injection, set:
+
+```lua
+ClientSupport = {
+	Enabled = true,
+	AutoInjectBootstrap = false,
+}
+```
+
+Then place [FetcherClient.client.lua](c:\Users\arthu\Downloads\Fetcher\examples\roblox\FetcherClient.client.lua) directly into:
+
+```text
+StarterPlayer
+`- StarterPlayerScripts
+```
+
+## Example Usage
+
+### Server Example
+
+```lua
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Fetcher = require(ReplicatedStorage:WaitForChild("Fetcher"))
+local fetcher = Fetcher.new()
+
+local ownerGamesResponse, requestError = fetcher:GetCurrentOwnerGames()
+if not ownerGamesResponse then
 	warn(requestError)
 	return
 end
 
-print("Owner User ID:", ownerGameCatalog.ownerUserId)
-print("Total Games:", ownerGameCatalog.totalGames)
+print(ownerGamesResponse.ownerUserId)
+print(ownerGamesResponse.totalGames)
+```
 
-for index, gameData in ipairs(ownerGameCatalog.games or {}) do
-	print("Game #" .. index)
-	print("Name:", gameData.name)
-	print("Likes:", gameData.likes)
-	print("Favorites:", gameData.favoritedCount)
-	print("Visits:", gameData.visits)
-	print("Created:", gameData.created)
-	print("Updated:", gameData.updated)
+### Client Example
+
+```lua
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Fetcher = require(ReplicatedStorage:WaitForChild("Fetcher"))
+local fetcher = Fetcher.new()
+
+local clientFetcher, clientFetcherError = fetcher:GetClientCallable()
+if not clientFetcher then
+	warn(clientFetcherError)
+	return
 end
+
+local ownerGamesResponse, requestError = clientFetcher:GetCurrentOwnerGames()
+if not ownerGamesResponse then
+	warn(requestError)
+	return
+end
+
+print(ownerGamesResponse.totalGames)
 ```
 
-## Base URL
+## Current Server Methods
 
-```text
-https://fetcher-production-2a8b.up.railway.app
-```
+The shared module currently supports these main server-side methods:
 
-Replace this with your own deployed Railway URL if needed.
+- `Fetcher.new(configurationOverride)`
+- `fetcher:GetHealth()`
+- `fetcher:ResolveCurrentExperienceOwnerUserId()`
+- `fetcher:GetOwnerGamesByUserId(ownerUserId, includeOverride)`
+- `fetcher:GetCurrentOwnerGames(includeOverride)`
+- `fetcher:BuildGamesByUniverseId(ownerGamesResponse)`
+- `fetcher:EnableClientSupport()`
+- `fetcher:InjectClientBootstrap(clientBootstrapTemplate)`
 
-## Authentication
+## Current Client Methods
 
-Protected routes require your API secret.
+The client callable currently supports:
 
-You can send it using either:
+- `clientFetcher:GetCurrentOwnerGames(includeOverride)`
+- `clientFetcher:GetOwnerGamesByUserId(ownerUserId, includeOverride)`
 
-- `Authorization: Bearer YOUR_SECRET`
-- `x-api-secret: YOUR_SECRET`
+These are routed through the server so the client never needs direct access to the API secret.
 
-## Endpoints
+## API Endpoints
 
 ### `GET /`
 
-Returns basic API information.
-
-#### Example
-
-```json
-{
-  "name": "Fetcher API",
-  "version": "2.0.0",
-  "status": "online",
-  "docs": "/docs",
-  "health": "/health",
-  "endpoints": [
-    "/owner-games"
-  ]
-}
-```
+Returns service metadata.
 
 ### `GET /health`
 
 Returns service health information.
-
-#### Example
-
-```json
-{
-  "status": "ok",
-  "secretConfigured": true,
-  "timestamp": "2026-04-02T12:00:00.000Z"
-}
-```
 
 ### `GET /docs`
 
@@ -244,11 +334,9 @@ Returns the built-in browser documentation page.
 
 ### `POST /owner-games`
 
-Returns public games owned by a Roblox user, with optional enrichment data.
+Returns public games owned by a Roblox user with optional enrichment data.
 
-## `POST /owner-games`
-
-### Request Body
+## `POST /owner-games` Request Body
 
 ```json
 {
@@ -262,27 +350,7 @@ Returns public games owned by a Roblox user, with optional enrichment data.
 }
 ```
 
-### Request Fields
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `ownerUserId` | `number` | Yes | Roblox user ID to fetch games for. |
-| `include.details` | `boolean` | No | Include detailed game metadata. |
-| `include.votes` | `boolean` | No | Include likes and dislikes. |
-| `include.favorites` | `boolean` | No | Include favorites count. |
-| `include.icons` | `boolean` | No | Include icon image URLs. |
-| `include.includeAll` | `boolean` | No | Turn on all enrichment options. |
-
-## Example cURL Request
-
-```bash
-curl -X POST "https://fetcher-production-2a8b.up.railway.app/owner-games" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_SECRET_HERE" \
-  -d "{\"ownerUserId\":1,\"include\":{\"details\":true,\"votes\":true,\"favorites\":true,\"icons\":true}}"
-```
-
-## Example Response
+## Example API Response
 
 ```json
 {
@@ -301,201 +369,62 @@ curl -X POST "https://fetcher-production-2a8b.up.railway.app/owner-games" \
       "rootPlaceId": 12345,
       "name": "Example Experience",
       "description": "Example description",
-      "sourceName": "Example Experience",
-      "creator": {
-        "id": 1,
-        "name": "Roblox",
-        "type": "User",
-        "isRNVAccount": false,
-        "hasVerifiedBadge": true
-      },
-      "price": null,
-      "allowedGearGenres": [],
-      "allowedGearCategories": [],
-      "isGenreEnforced": false,
-      "copyingAllowed": false,
-      "playing": 120,
+      "likes": 3000,
+      "dislikes": 150,
+      "favoritedCount": 10000,
       "visits": 500000,
-      "maxPlayers": 50,
+      "playing": 120,
       "created": "2024-01-01T12:00:00.000Z",
       "published": "2024-01-01T12:00:00.000Z",
       "updated": "2026-03-31T16:50:00.000Z",
       "lastUpdated": "2026-03-31T16:50:00.000Z",
-      "studioAccessToApisAllowed": false,
-      "createVipServersAllowed": true,
-      "universeAvatarType": "MorphToR15",
-      "genre": "All",
-      "isAllGenre": true,
-      "isFavoritedByUser": false,
-      "favoritedCount": 10000,
-      "iconImageUrl": "https://tr.rbxcdn.com/example.png",
-      "likes": 3000,
-      "dislikes": 150,
-      "totalVotes": 3150,
-      "likeRatio": 0.9523809524,
-      "voteData": {
-        "upVotes": 3000,
-        "downVotes": 150
-      },
-      "timestamps": {
-        "created": "2024-01-01T12:00:00.000Z",
-        "published": "2024-01-01T12:00:00.000Z",
-        "updated": "2026-03-31T16:50:00.000Z",
-        "lastUpdated": "2026-03-31T16:50:00.000Z"
-      },
-      "metrics": {
-        "playing": 120,
-        "visits": 500000,
-        "favorites": 10000,
-        "likes": 3000,
-        "dislikes": 150,
-        "totalVotes": 3150,
-        "likeRatio": 0.9523809524
-      },
-      "raw": {
-        "detail": {},
-        "vote": {}
-      }
+      "iconImageUrl": "https://tr.rbxcdn.com/example.png"
     }
   ]
 }
 ```
 
-## Response Field Guide
-
-### Top-Level Fields
-
-| Field | Meaning |
-| --- | --- |
-| `ownerUserId` | The Roblox user ID that was requested. |
-| `totalGames` | Total number of public games returned. |
-| `requestedAt` | ISO timestamp for when the API built the response. |
-| `include` | The enrichment options used for the request. |
-| `games` | List of returned games. |
-
-### Important Game Fields
-
-| Field | Meaning |
-| --- | --- |
-| `name` | Game name. |
-| `universeId` | Roblox universe ID. |
-| `rootPlaceId` | Roblox root place ID. |
-| `description` | Game description. |
-| `likes` | Up-vote count. |
-| `dislikes` | Down-vote count. |
-| `favoritedCount` | Favorites count. |
-| `visits` | Total visits. |
-| `playing` | Current active players. |
-| `maxPlayers` | Max players allowed. |
-| `created` | Creation timestamp. |
-| `published` | Alias of `created`. |
-| `updated` | Last updated timestamp. |
-| `lastUpdated` | Alias of `updated`. |
-| `iconImageUrl` | Game icon URL. |
-| `creator` | Creator information. |
-| `metrics` | Grouped engagement metrics. |
-| `timestamps` | Grouped time information. |
-| `raw` | Raw Roblox detail and vote payloads. |
-
-## Created vs Published
-
-Roblox commonly exposes:
-
-- `created`
-- `updated`
-
-A separate public `published` timestamp is not always returned in the same endpoint shape, so this API maps:
-
-- `published = created`
-- `lastUpdated = updated`
-
-This keeps the API more convenient for consumers that expect both names.
-
 ## Troubleshooting
 
-### Error: Unauthorized
+### `Unauthorized`
 
-This means the secret you sent does not match the server's `API_SECRET`.
+The secret sent from the server module does not match the API server's `API_SECRET`.
+
+### `API secret is not configured on the server`
+
+Railway is online, but `API_SECRET` has not been configured for that deployed service.
+
+### `Too many requests`
+
+Roblox throttled one or more underlying Roblox web endpoints. Some fields may be temporarily unavailable.
+
+### Client cannot fetch
 
 Check:
 
-- the Railway variable is named exactly `API_SECRET`
-- your Roblox script uses the same exact secret
-- you redeployed after updating Railway variables
-
-### Error: API secret is not configured on the server
-
-This means Railway is running, but `API_SECRET` was never set for that service.
-
-Fix:
-
-```text
-1. Open Railway
-2. Open your service
-3. Go to Variables
-4. Add API_SECRET
-5. Save
-6. Redeploy
-```
-
-### Error: Too many requests
-
-This comes from Roblox rate limits, not from your Roblox script directly.
-
-Fetcher API already tries to handle this more gracefully, but if Roblox throttles hard enough, some fields may be missing temporarily.
-
-### Error: No public games were found
-
-This means the resolved owner does not currently have public games available through the Roblox API.
-
-## Railway Setup
-
-### Required Variables
-
-| Variable | Required | Description |
-| --- | --- | --- |
-| `API_SECRET` | Yes | Secret used to authenticate protected routes. |
-| `PORT` | No | Provided automatically by Railway. |
-
-### Start Command
-
-```bash
-npm start
-```
-
-## Project Structure
-
-```text
-Fetcher/
-├─ package.json
-├─ package-lock.json
-├─ server.js
-└─ README.md
-```
+- `ClientSupport.Enabled` is `true`
+- the server bootstrap ran successfully
+- the remote function exists in `ReplicatedStorage`
+- the client bootstrap was injected or placed correctly
 
 ## Security Notes
 
-- Keep your API secret private.
-- Do not put your secret in public GitHub repositories.
-- Do not expose the secret in client-side browser code.
-- Prefer Roblox server scripts over local scripts for requests like this.
-- Rotate the secret if it has been exposed.
+- Keep the API secret server-side only
+- do not expose `ApiSecret` in public client-only packages
+- prefer using the server bootstrap for authenticated access
+- use client support only when you intentionally want client scripts to consume fetcher data
 
-## Feature Summary
+## Future Expansion
 
-Fetcher API supports:
+Fetcher is intentionally named broadly so future fetchers can be added under the same module style.
 
-- owner game lookup
-- likes and dislikes
-- favorites count
-- visits and playing count
-- icon URLs
-- creator metadata
-- timestamps
-- grouped metrics
-- grouped timestamps
-- raw Roblox payload passthrough
-- browser docs page
+Likely future additions:
+
+- game pass fetchers
+- badge fetchers
+- asset fetchers
+- group fetchers
+- inventory fetchers
 
 ## License
 
