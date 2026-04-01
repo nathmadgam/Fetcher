@@ -1,7 +1,33 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Fetcher = require(ReplicatedStorage:WaitForChild("Fetcher"))
+local packageRoot = script.Parent
+local bootstrapModule =
+	(ReplicatedStorage:FindFirstChild("Fetcher") and ReplicatedStorage.Fetcher:IsA("ModuleScript") and ReplicatedStorage.Fetcher)
+	or (packageRoot:FindFirstChild("Fetcher") and packageRoot.Fetcher:IsA("ModuleScript") and packageRoot.Fetcher)
+
+if not bootstrapModule then
+	warn("[FetcherServer] Could not find a bootstrap ModuleScript named 'Fetcher'.")
+	return
+end
+
+local BootstrapFetcher = require(bootstrapModule)
+local bootstrapFetcher = BootstrapFetcher.new()
+local sharedFetcherModule = bootstrapFetcher:FindSharedModule(packageRoot)
+
+if not sharedFetcherModule then
+	warn("[FetcherServer] Could not find the configured shared Fetcher module.")
+	return
+end
+
+local Fetcher = require(sharedFetcherModule)
 local fetcher = Fetcher.new()
+
+print("[FetcherServer] Bootstrap started.")
+
+local clientRemote = fetcher:GetClientRemoteFunction()
+if clientRemote then
+	print("[FetcherServer] Client remote ready:", clientRemote:GetFullName())
+end
 
 local healthData, healthError = fetcher:GetHealth()
 if not healthData then
@@ -19,7 +45,7 @@ if not clientSupportEnabled and clientSupportError then
 	warn("[FetcherServer] " .. tostring(clientSupportError))
 end
 
-local clientBootstrapTemplate = script:FindFirstChild("FetcherClient")
+local clientBootstrapTemplate = fetcher:FindClientBootstrapTemplate(script)
 if clientBootstrapTemplate then
 	local injected, injectionError = fetcher:InjectClientBootstrap(clientBootstrapTemplate)
 	if not injected and injectionError then

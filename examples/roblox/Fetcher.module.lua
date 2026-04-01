@@ -20,6 +20,7 @@ Fetcher.Configuration = {
 	ClientSupport = {
 		Enabled = true,
 		AutoInjectBootstrap = true,
+		SharedModuleName = "Fetcher",
 		ReplicatedFolderName = "Fetcher",
 		RequestFunctionName = "FetcherRequest",
 		ClientBootstrapName = "FetcherClient",
@@ -72,6 +73,20 @@ local function getPlayerScriptsContainer(player)
 	end
 
 	return player:WaitForChild("PlayerScripts", 10)
+end
+
+local function findDescendantByNameAndClass(root, objectName, className)
+	if not root then
+		return nil
+	end
+
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if descendant.Name == objectName and descendant.ClassName == className then
+			return descendant
+		end
+	end
+
+	return nil
 end
 
 function Fetcher.new(configurationOverride)
@@ -327,6 +342,56 @@ function Fetcher:GetClientCallable()
 	end
 
 	return clientCallable
+end
+
+function Fetcher:GetConfiguredSharedModuleName()
+	return self.Configuration.ClientSupport.SharedModuleName or "Fetcher"
+end
+
+function Fetcher:GetConfiguredClientBootstrapName()
+	return self.Configuration.ClientSupport.ClientBootstrapName or "FetcherClient"
+end
+
+function Fetcher:FindSharedModule(searchRoot)
+	local moduleName = self:GetConfiguredSharedModuleName()
+
+	local directReplicatedMatch = ReplicatedStorage:FindFirstChild(moduleName)
+	if directReplicatedMatch and directReplicatedMatch:IsA("ModuleScript") then
+		return directReplicatedMatch
+	end
+
+	if searchRoot then
+		local directLocalMatch = searchRoot:FindFirstChild(moduleName)
+		if directLocalMatch and directLocalMatch:IsA("ModuleScript") then
+			return directLocalMatch
+		end
+	end
+
+	local nestedReplicatedMatch = findDescendantByNameAndClass(ReplicatedStorage, moduleName, "ModuleScript")
+	if nestedReplicatedMatch then
+		return nestedReplicatedMatch
+	end
+
+	if searchRoot then
+		return findDescendantByNameAndClass(searchRoot, moduleName, "ModuleScript")
+	end
+
+	return nil
+end
+
+function Fetcher:FindClientBootstrapTemplate(searchRoot)
+	local bootstrapName = self:GetConfiguredClientBootstrapName()
+
+	if searchRoot then
+		local directMatch = searchRoot:FindFirstChild(bootstrapName)
+		if directMatch and directMatch:IsA("LocalScript") then
+			return directMatch
+		end
+
+		return findDescendantByNameAndClass(searchRoot, bootstrapName, "LocalScript")
+	end
+
+	return nil
 end
 
 return Fetcher
