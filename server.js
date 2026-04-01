@@ -13,6 +13,8 @@ const DEFAULT_INCLUDE = {
   icons: true
 };
 
+const FAVORITES_CONCURRENCY = 5;
+
 function getRequestSecret(req) {
   const headerSecret = req.headers["x-api-secret"];
   if (headerSecret) {
@@ -78,6 +80,39 @@ async function fetchJson(url) {
   return JSON.parse(await fetchText(url));
 }
 
+async function fetchJsonSafe(url, fallbackValue) {
+  try {
+    return await fetchJson(url);
+  } catch (error) {
+    if (String(error).includes("Roblox API 429")) {
+      return fallbackValue;
+    }
+
+    throw error;
+  }
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    () => worker()
+  );
+
+  await Promise.all(workers);
+  return results;
+}
+
 async function getOwnedGames(ownerUserId, limit = 50) {
   let cursor = "";
   const games = [];
@@ -105,8 +140,10 @@ async function getGameDetails(universeIds) {
 
   await Promise.all(
     chunks.map(async (chunk) => {
-      const data = await fetchJson(
+      const data = await fetchJsonSafe(
         `https://games.roblox.com/v1/games?universeIds=${chunk.join(",")}`
+        ,
+        { data: [] }
       );
 
       for (const game of data.data || []) {
@@ -124,8 +161,10 @@ async function getGameVotes(universeIds) {
 
   await Promise.all(
     chunks.map(async (chunk) => {
-      const data = await fetchJson(
+      const data = await fetchJsonSafe(
         `https://games.roblox.com/v1/games/votes?universeIds=${chunk.join(",")}`
+        ,
+        { data: [] }
       );
 
       for (const vote of data.data || []) {
@@ -138,14 +177,17 @@ async function getGameVotes(universeIds) {
 }
 
 async function getGameFavorites(universeIds) {
-  const favoritesEntries = await Promise.all(
-    universeIds.map(async (universeId) => {
-      const data = await fetchJson(
-        `https://games.roblox.com/v1/games/${universeId}/favorites/count`
+  const favoritesEntries = await mapWithConcurrency(
+    universeIds,
+    FAVORITES_CONCURRENCY,
+    async (universeId) => {
+      const data = await fetchJsonSafe(
+        `https://games.roblox.com/v1/games/${universeId}/favorites/count`,
+        { favoritesCount: null }
       );
 
-      return [universeId, data.favoritesCount ?? 0];
-    })
+      return [universeId, data.favoritesCount ?? null];
+    }
   );
 
   return new Map(favoritesEntries);
@@ -157,8 +199,10 @@ async function getGameIcons(universeIds) {
 
   await Promise.all(
     chunks.map(async (chunk) => {
-      const data = await fetchJson(
+      const data = await fetchJsonSafe(
         `https://thumbnails.roblox.com/v1/games/icons?universeIds=${chunk.join(",")}&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false`
+        ,
+        { data: [] }
       );
 
       for (const icon of data.data || []) {
