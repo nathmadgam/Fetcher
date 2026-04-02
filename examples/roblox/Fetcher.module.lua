@@ -1,4 +1,3 @@
-local HttpService = game:GetService("HttpService")
 local GroupService = game:GetService("GroupService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -218,9 +217,9 @@ function Fetcher:RunQueuedRequest(executor)
 	return firstResult, secondResult
 end
 
-function Fetcher:ResolveCurrentExperienceOwnerUserId()
+function Fetcher:ResolveCurrentExperienceOwner()
 	if game.CreatorType == Enum.CreatorType.User then
-		return game.CreatorId
+		return "User", game.CreatorId
 	end
 
 	if game.CreatorType == Enum.CreatorType.Group then
@@ -232,11 +231,11 @@ function Fetcher:ResolveCurrentExperienceOwnerUserId()
 			return nil, "Failed to get group information."
 		end
 
-		if groupInformation and groupInformation.Owner and groupInformation.Owner.Id then
-			return groupInformation.Owner.Id
+		if groupInformation and groupInformation.Id then
+			return "Group", groupInformation.Id
 		end
 
-		return nil, "Group owner could not be resolved."
+		return nil, "Group/community could not be resolved."
 	end
 
 	return nil, "Unsupported creator type."
@@ -275,18 +274,53 @@ function Fetcher:GetOwnerGamesByUserId(ownerUserId, includeOverride)
 	end
 
 	return self:PostJson("/owner-games", {
+		ownerType = "User",
+		ownerId = ownerUserId,
 		ownerUserId = ownerUserId,
 		include = includeOverride or self.Configuration.Include,
 	})
 end
 
-function Fetcher:GetCurrentOwnerGames(includeOverride)
-	local ownerUserId, ownerError = self:ResolveCurrentExperienceOwnerUserId()
-	if not ownerUserId then
-		return nil, ownerError
+function Fetcher:GetOwnerGamesByGroupId(ownerGroupId, includeOverride)
+	if type(ownerGroupId) ~= "number" then
+		return nil, "ownerGroupId must be a number."
 	end
 
-	return self:GetOwnerGamesByUserId(ownerUserId, includeOverride)
+	return self:PostJson("/owner-games", {
+		ownerType = "Group",
+		ownerId = ownerGroupId,
+		ownerGroupId = ownerGroupId,
+		include = includeOverride or self.Configuration.Include,
+	})
+end
+
+function Fetcher:GetCurrentOwnerGames(includeOverride)
+	local ownerType, ownerIdOrError = self:ResolveCurrentExperienceOwner()
+	if not ownerType then
+		return nil, ownerIdOrError
+	end
+
+	if ownerType == "Group" then
+		return self:GetOwnerGamesByGroupId(ownerIdOrError, includeOverride)
+	end
+
+	if ownerType == "User" then
+		return self:GetOwnerGamesByUserId(ownerIdOrError, includeOverride)
+	end
+
+	return nil, "Unsupported owner type."
+end
+
+function Fetcher:GetCurrentOwnerIdentity()
+	local ownerType, ownerIdOrError = self:ResolveCurrentExperienceOwner()
+	if not ownerType then
+		return nil, ownerIdOrError
+	end
+
+	return {
+		ownerType = ownerType,
+		ownerId = ownerIdOrError,
+	}
 end
 
 function Fetcher:BuildGamesByUniverseId(ownerGamesResponse)
@@ -307,7 +341,8 @@ function Fetcher:PrintOwnerGamesResponse(logPrefix, ownerGamesResponse)
 		return false
 	end
 
-	print(prefix, "Owner User ID:", ownerGamesResponse.ownerUserId)
+	print(prefix, "Owner Type:", ownerGamesResponse.ownerType or "Unknown")
+	print(prefix, "Owner ID:", ownerGamesResponse.ownerId or ownerGamesResponse.ownerUserId or ownerGamesResponse.ownerGroupId or 0)
 	print(prefix, "Total Games:", ownerGamesResponse.totalGames)
 	print(prefix, "Requested At:", ownerGamesResponse.requestedAt)
 
@@ -465,6 +500,10 @@ function Fetcher:HandleClientRequest(requestPayload)
 
 	if actionName == "GetOwnerGamesByUserId" then
 		return self:GetOwnerGamesByUserId(payload.OwnerUserId, payload.Include)
+	end
+
+	if actionName == "GetOwnerGamesByGroupId" then
+		return self:GetOwnerGamesByGroupId(payload.OwnerGroupId, payload.Include)
 	end
 
 	if actionName == "BuildGamesFolder" then
@@ -629,6 +668,16 @@ function Fetcher:GetClientCallable()
 			Action = "GetOwnerGamesByUserId",
 			Payload = {
 				OwnerUserId = ownerUserId,
+				Include = includeOverride,
+			},
+		})
+	end
+
+	function clientCallable:GetOwnerGamesByGroupId(ownerGroupId, includeOverride)
+		return requestRemote:InvokeServer({
+			Action = "GetOwnerGamesByGroupId",
+			Payload = {
+				OwnerGroupId = ownerGroupId,
 				Include = includeOverride,
 			},
 		})

@@ -113,13 +113,35 @@ async function mapWithConcurrency(items, concurrency, mapper) {
   return results;
 }
 
-async function getOwnedGames(ownerUserId, limit = 50) {
+async function getOwnedGamesByUserId(ownerUserId, limit = 50) {
   let cursor = "";
   const games = [];
 
   do {
     const page = await fetchJson(
       `https://games.roblox.com/v2/users/${ownerUserId}/games?accessFilter=Public&limit=${limit}&sortOrder=Asc${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`
+    );
+
+    games.push(...(page.data || []));
+    cursor = page.nextPageCursor || "";
+  } while (cursor);
+
+  return games.map((game) => ({
+    id: game.id,
+    universeId: game.id,
+    placeId: game.rootPlaceId ?? null,
+    rootPlaceId: game.rootPlaceId ?? null,
+    name: game.name ?? "Unknown"
+  }));
+}
+
+async function getOwnedGamesByGroupId(groupId, limit = 50) {
+  let cursor = "";
+  const games = [];
+
+  do {
+    const page = await fetchJson(
+      `https://games.roblox.com/v2/groups/${groupId}/gamesV2?accessFilter=Public&limit=${limit}&sortOrder=Asc${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`
     );
 
     games.push(...(page.data || []));
@@ -401,13 +423,19 @@ function buildGameRecord(baseGame, detail, vote, favoritesCount, iconUrl, ownerI
   };
 }
 
-async function buildOwnerGamesResponse(ownerUserId, include = DEFAULT_INCLUDE) {
-  const baseGames = await getOwnedGames(ownerUserId);
+async function buildOwnerGamesResponse(ownerType, ownerId, include = DEFAULT_INCLUDE) {
+  const normalizedOwnerType = String(ownerType || "User").toLowerCase();
+  const baseGames = normalizedOwnerType === "group"
+    ? await getOwnedGamesByGroupId(ownerId)
+    : await getOwnedGamesByUserId(ownerId);
   const universeIds = baseGames.map((game) => game.universeId);
 
   if (universeIds.length === 0) {
     return {
-      ownerUserId,
+      ownerType: normalizedOwnerType === "group" ? "Group" : "User",
+      ownerId,
+      ownerUserId: normalizedOwnerType === "user" ? ownerId : null,
+      ownerGroupId: normalizedOwnerType === "group" ? ownerId : null,
       totalGames: 0,
       requestedAt: new Date().toISOString(),
       include,
@@ -442,7 +470,10 @@ async function buildOwnerGamesResponse(ownerUserId, include = DEFAULT_INCLUDE) {
   );
 
   return {
-    ownerUserId,
+    ownerType: normalizedOwnerType === "group" ? "Group" : "User",
+    ownerId,
+    ownerUserId: normalizedOwnerType === "user" ? ownerId : null,
+    ownerGroupId: normalizedOwnerType === "group" ? ownerId : null,
     totalGames: games.length,
     requestedAt: new Date().toISOString(),
     include,
@@ -584,13 +615,20 @@ app.post("/owner-games", async (req, res) => {
   }
 
   try {
-    const { ownerUserId, include = DEFAULT_INCLUDE } = req.body || {};
+    const {
+      ownerType = "User",
+      ownerId,
+      ownerUserId,
+      ownerGroupId,
+      include = DEFAULT_INCLUDE
+    } = req.body || {};
 
-    if (!ownerUserId) {
-      return res.status(400).json({ error: "Missing ownerUserId" });
+    const resolvedOwnerId = ownerId ?? ownerUserId ?? ownerGroupId;
+    if (!resolvedOwnerId) {
+      return res.status(400).json({ error: "Missing ownerId" });
     }
 
-    const response = await buildOwnerGamesResponse(ownerUserId, normalizeInclude(include));
+    const response = await buildOwnerGamesResponse(ownerType, resolvedOwnerId, normalizeInclude(include));
     return res.json(response);
   } catch (error) {
     return res.status(500).json({
