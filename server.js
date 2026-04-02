@@ -129,6 +129,7 @@ async function getOwnedGames(ownerUserId, limit = 50) {
   return games.map((game) => ({
     id: game.id,
     universeId: game.id,
+    placeId: game.rootPlaceId ?? null,
     rootPlaceId: game.rootPlaceId ?? null,
     name: game.name ?? "Unknown"
   }));
@@ -214,21 +215,136 @@ async function getGameIcons(universeIds) {
   return iconsMap;
 }
 
-function buildGameRecord(baseGame, detail, vote, favoritesCount, iconUrl) {
+function getOwnerMapKey(ownerType, ownerId) {
+  if (!ownerType || !ownerId) {
+    return null;
+  }
+
+  return `${String(ownerType).toLowerCase()}:${ownerId}`;
+}
+
+async function getOwnerImages(gameDetails) {
+  const ownerImagesMap = new Map();
+  const userIds = [];
+  const groupIds = [];
+  const seenKeys = new Set();
+
+  for (const detail of gameDetails) {
+    const ownerType = detail?.creator?.type ?? null;
+    const ownerId = detail?.creator?.id ?? null;
+    const ownerKey = getOwnerMapKey(ownerType, ownerId);
+
+    if (!ownerKey || seenKeys.has(ownerKey)) {
+      continue;
+    }
+
+    seenKeys.add(ownerKey);
+
+    if (ownerType === "User") {
+      userIds.push(ownerId);
+    } else if (ownerType === "Group") {
+      groupIds.push(ownerId);
+    }
+  }
+
+  const userChunks = chunkArray(userIds, 100);
+  await Promise.all(
+    userChunks.map(async (chunk) => {
+      const data = await fetchJsonSafe(
+        `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${chunk.join(",")}&size=150x150&format=Png&isCircular=false`,
+        { data: [] }
+      );
+
+      for (const userThumbnail of data.data || []) {
+        ownerImagesMap.set(getOwnerMapKey("User", userThumbnail.targetId), userThumbnail.imageUrl ?? null);
+      }
+    })
+  );
+
+  const groupChunks = chunkArray(groupIds, 100);
+  await Promise.all(
+    groupChunks.map(async (chunk) => {
+      const data = await fetchJsonSafe(
+        `https://thumbnails.roblox.com/v1/groups/icons?groupIds=${chunk.join(",")}&size=150x150&format=Png&isCircular=false`,
+        { data: [] }
+      );
+
+      for (const groupThumbnail of data.data || []) {
+        ownerImagesMap.set(getOwnerMapKey("Group", groupThumbnail.targetId), groupThumbnail.imageUrl ?? null);
+      }
+    })
+  );
+
+  return ownerImagesMap;
+}
+
+function buildOwnerRecord(creator, ownerImageUrl) {
+  const ownerId = creator?.id ?? null;
+  const ownerName = creator?.name ?? null;
+  const ownerDisplayName = creator?.displayName ?? ownerName;
+  const ownerType = creator?.type ?? null;
+
+  return {
+    id: ownerId,
+    userId: ownerId,
+    username: ownerName,
+    name: ownerName,
+    displayName: ownerDisplayName,
+    type: ownerType,
+    image: ownerImageUrl ?? null,
+    imageUrl: ownerImageUrl ?? null
+  };
+}
+
+function buildThumbnailRecord(iconUrl) {
+  return {
+    url: iconUrl ?? null,
+    imageUrl: iconUrl ?? null,
+    iconUrl: iconUrl ?? null,
+    thumbnailUrl: iconUrl ?? null
+  };
+}
+
+function buildGameRecord(baseGame, detail, vote, favoritesCount, iconUrl, ownerImageUrl) {
   const upVotes = vote?.upVotes ?? 0;
   const downVotes = vote?.downVotes ?? 0;
   const totalVotes = upVotes + downVotes;
   const likeRatio = totalVotes > 0 ? upVotes / totalVotes : null;
   const created = detail?.created ?? null;
   const updated = detail?.updated ?? null;
+  const creator = detail?.creator ?? null;
+  const owner = buildOwnerRecord(creator, ownerImageUrl);
+  const ownerId = owner.id;
+  const ownerName = owner.name;
+  const ownerUsername = owner.username;
+  const ownerDisplayName = owner.displayName;
+  const ownerType = owner.type;
+  const placeId = baseGame.placeId ?? baseGame.rootPlaceId ?? detail?.rootPlaceId ?? null;
+  const thumbnail = buildThumbnailRecord(iconUrl);
+  const thumbnails = {
+    icon: thumbnail,
+    gameIcon: thumbnail,
+    primary: thumbnail,
+    list: [thumbnail]
+  };
 
   return {
     universeId: baseGame.universeId,
-    rootPlaceId: baseGame.rootPlaceId,
+    placeId,
+    gameId: placeId,
+    rootPlaceId: placeId,
     name: detail?.name ?? baseGame.name,
     description: detail?.description ?? "",
     sourceName: baseGame.name,
-    creator: detail?.creator ?? null,
+    creator,
+    ownerId,
+    ownerUserId: ownerId,
+    ownerName,
+    ownerUsername,
+    ownerDisplayName,
+    ownerType,
+    ownerImage: ownerImageUrl ?? null,
+    owner,
     price: detail?.price ?? null,
     allowedGearGenres: detail?.allowedGearGenres ?? [],
     allowedGearCategories: detail?.allowedGearCategories ?? [],
@@ -249,6 +365,10 @@ function buildGameRecord(baseGame, detail, vote, favoritesCount, iconUrl) {
     isFavoritedByUser: detail?.isFavoritedByUser ?? false,
     favoritedCount: favoritesCount ?? 0,
     iconImageUrl: iconUrl ?? null,
+    imageUrl: iconUrl ?? null,
+    thumbnailImageUrl: iconUrl ?? null,
+    thumbnailUrl: iconUrl ?? null,
+    thumbnails,
     likes: upVotes,
     dislikes: downVotes,
     totalVotes,
@@ -301,6 +421,9 @@ async function buildOwnerGamesResponse(ownerUserId, include = DEFAULT_INCLUDE) {
     include.favorites ? getGameFavorites(universeIds) : Promise.resolve(new Map()),
     include.icons ? getGameIcons(universeIds) : Promise.resolve(new Map())
   ]);
+  const ownerImagesMap = include.details
+    ? await getOwnerImages(Array.from(detailsMap.values()))
+    : new Map();
 
   const games = baseGames.map((game) =>
     buildGameRecord(
@@ -308,7 +431,13 @@ async function buildOwnerGamesResponse(ownerUserId, include = DEFAULT_INCLUDE) {
       detailsMap.get(game.universeId),
       votesMap.get(game.universeId),
       favoritesMap.get(game.universeId),
-      iconsMap.get(game.universeId)
+      iconsMap.get(game.universeId),
+      ownerImagesMap.get(
+        getOwnerMapKey(
+          detailsMap.get(game.universeId)?.creator?.type,
+          detailsMap.get(game.universeId)?.creator?.id
+        )
+      )
     )
   );
 
