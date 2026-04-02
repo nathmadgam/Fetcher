@@ -270,6 +270,34 @@ function getOwnerMapKey(ownerType, ownerId) {
   return `${String(ownerType).toLowerCase()}:${ownerId}`;
 }
 
+function buildGameIconContentId(universeId) {
+  if (!universeId) {
+    return null;
+  }
+
+  return `rbxthumb://type=GameIcon&id=${universeId}&w=150&h=150`;
+}
+
+function buildGameThumbnailContentId(placeId) {
+  if (!placeId) {
+    return null;
+  }
+
+  return `rbxthumb://type=GameThumbnail&id=${placeId}&w=768&h=432`;
+}
+
+function buildOwnerContentId(ownerType, ownerId) {
+  if (!ownerId) {
+    return null;
+  }
+
+  if (ownerType === "Group") {
+    return `rbxthumb://type=GroupIcon&id=${ownerId}&w=420&h=420`;
+  }
+
+  return `rbxthumb://type=AvatarHeadShot&id=${ownerId}&w=420&h=420`;
+}
+
 async function getOwnerImages(gameDetails) {
   const ownerImagesMap = new Map();
   const userIds = [];
@@ -330,6 +358,7 @@ function buildOwnerRecord(creator, ownerImageUrl) {
   const ownerName = creator?.name ?? null;
   const ownerDisplayName = creator?.displayName ?? ownerName;
   const ownerType = creator?.type ?? null;
+  const ownerContentId = buildOwnerContentId(ownerType, ownerId);
 
   return {
     id: ownerId,
@@ -338,17 +367,21 @@ function buildOwnerRecord(creator, ownerImageUrl) {
     name: ownerName,
     displayName: ownerDisplayName,
     type: ownerType,
-    image: ownerImageUrl ?? null,
-    imageUrl: ownerImageUrl ?? null
+    image: ownerContentId ?? ownerImageUrl ?? null,
+    imageUrl: ownerContentId ?? ownerImageUrl ?? null,
+    imageWebUrl: ownerImageUrl ?? null
   };
 }
 
-function buildThumbnailRecord(imageUrl, iconUrl) {
+function buildThumbnailRecord(contentImageUrl, contentIconUrl, webImageUrl, webIconUrl) {
   return {
-    url: imageUrl ?? null,
-    imageUrl: imageUrl ?? null,
-    iconUrl: iconUrl ?? null,
-    thumbnailUrl: imageUrl ?? null
+    url: contentImageUrl ?? null,
+    imageUrl: contentImageUrl ?? null,
+    iconUrl: contentIconUrl ?? null,
+    thumbnailUrl: contentImageUrl ?? null,
+    webUrl: webImageUrl ?? null,
+    webImageUrl: webImageUrl ?? null,
+    webIconUrl: webIconUrl ?? null
   };
 }
 
@@ -367,7 +400,9 @@ function buildGameRecord(baseGame, detail, vote, favoritesCount, iconUrl, thumbn
   const ownerDisplayName = owner.displayName;
   const ownerType = owner.type;
   const placeId = detail?.rootPlaceId ?? baseGame.rootPlaceId ?? baseGame.placeId ?? null;
-  const thumbnail = buildThumbnailRecord(thumbnailUrl, iconUrl);
+  const iconContentId = buildGameIconContentId(baseGame.universeId);
+  const thumbnailContentId = buildGameThumbnailContentId(placeId);
+  const thumbnail = buildThumbnailRecord(thumbnailContentId, iconContentId, thumbnailUrl, iconUrl);
   const thumbnails = {
     icon: thumbnail,
     gameIcon: thumbnail,
@@ -390,7 +425,8 @@ function buildGameRecord(baseGame, detail, vote, favoritesCount, iconUrl, thumbn
     ownerUsername,
     ownerDisplayName,
     ownerType,
-    ownerImage: ownerImageUrl ?? null,
+    ownerImage: owner.image ?? null,
+    ownerImageWebUrl: ownerImageUrl ?? null,
     owner,
     price: detail?.price ?? null,
     allowedGearGenres: detail?.allowedGearGenres ?? [],
@@ -411,10 +447,13 @@ function buildGameRecord(baseGame, detail, vote, favoritesCount, iconUrl, thumbn
     isAllGenre: detail?.isAllGenre ?? false,
     isFavoritedByUser: detail?.isFavoritedByUser ?? false,
     favoritedCount: favoritesCount ?? 0,
-    iconImageUrl: iconUrl ?? null,
-    imageUrl: thumbnailUrl ?? iconUrl ?? null,
-    thumbnailImageUrl: thumbnailUrl ?? null,
-    thumbnailUrl: thumbnailUrl ?? null,
+    iconImageUrl: iconContentId ?? iconUrl ?? null,
+    iconWebUrl: iconUrl ?? null,
+    imageUrl: thumbnailContentId ?? iconContentId ?? thumbnailUrl ?? iconUrl ?? null,
+    imageWebUrl: thumbnailUrl ?? iconUrl ?? null,
+    thumbnailImageUrl: thumbnailContentId ?? thumbnailUrl ?? null,
+    thumbnailWebUrl: thumbnailUrl ?? null,
+    thumbnailUrl: thumbnailContentId ?? thumbnailUrl ?? null,
     thumbnails,
     likes: upVotes,
     dislikes: downVotes,

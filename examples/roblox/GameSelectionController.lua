@@ -79,6 +79,7 @@ end
 local function setImage(imageObject, value)
 	if imageObject and (imageObject:IsA("ImageLabel") or imageObject:IsA("ImageButton")) then
 		imageObject.Image = tostring(value or "")
+		imageObject.Visible = imageObject.Image ~= ""
 	end
 end
 
@@ -107,10 +108,10 @@ local function buildOwnerThumbnail(ownerType, ownerId)
 	end
 
 	if tostring(ownerType) == "Group" then
-		return string.format("rbxthumb://type=GroupIcon&id=%d&w=150&h=150", numericOwnerId)
+		return string.format("rbxthumb://type=GroupIcon&id=%d&w=420&h=420", numericOwnerId)
 	end
 
-	return string.format("rbxthumb://type=AvatarHeadShot&id=%d&w=150&h=150", numericOwnerId)
+	return string.format("rbxthumb://type=AvatarHeadShot&id=%d&w=420&h=420", numericOwnerId)
 end
 
 local function normalizeImageSource(value)
@@ -146,6 +147,34 @@ local function normalizeImageSource(value)
 	end
 
 	return ""
+end
+
+local function getSquareImageSource(value)
+	local image = normalizeImageSource(value)
+	if image == "" then
+		return ""
+	end
+
+	local normalizedImage = string.lower(image)
+	if string.find(normalizedImage, "/768/432/", 1, true) ~= nil then
+		return ""
+	end
+
+	return image
+end
+
+local function getListLayout(scroll)
+	if not scroll then
+		return nil
+	end
+
+	for _, child in ipairs(scroll:GetChildren()) do
+		if child:IsA("UIListLayout") then
+			return child
+		end
+	end
+
+	return nil
 end
 
 local function formatNumber(value)
@@ -315,11 +344,11 @@ local function getOwnerInfo(game)
 	)
 	local ownerType = firstNonEmpty(game.ownerType, ownerTable and ownerTable.type, "Unknown")
 	local ownerId = tonumber(firstNonEmpty(game.ownerId, ownerTable and ownerTable.id, ownerTable and ownerTable.userId, 0)) or 0
-	local ownerImage = buildOwnerThumbnail(ownerType, ownerId)
+	local directOwnerImage = firstNonEmpty(game.ownerImage, ownerTable and ownerTable.imageUrl, ownerTable and ownerTable.image, "")
+	local ownerImage = getSquareImageSource(directOwnerImage)
 
 	if ownerImage == "" then
-		local directOwnerImage = firstNonEmpty(game.ownerImage, ownerTable and ownerTable.imageUrl, ownerTable and ownerTable.image, "")
-		ownerImage = normalizeImageSource(directOwnerImage)
+		ownerImage = buildOwnerThumbnail(ownerType, ownerId)
 	end
 
 	if ownerName and ownerName ~= "Unknown" then
@@ -345,24 +374,24 @@ local function getOwnerInfo(game)
 end
 
 local function getGameIcon(game)
-	local universeId = tonumber(game.universeId) or tonumber(game.gameId)
-	if universeId and universeId > 0 then
-		return buildGameIconThumbnail(universeId)
-	end
-
-	local directIcon = firstNonEmpty(game.iconImageUrl, game.imageUrl, game.image)
-	local normalizedDirectIcon = normalizeImageSource(directIcon)
+	local directIcon = firstNonEmpty(game.iconImageUrl, game.iconUrl)
+	local normalizedDirectIcon = getSquareImageSource(directIcon)
 	if normalizedDirectIcon ~= "" then
 		return normalizedDirectIcon
 	end
 
 	local thumbnailEntries = getThumbnailEntries(game)
 	if thumbnailEntries and thumbnailEntries[1] then
-		local thumbnailUrl = firstNonEmpty(thumbnailEntries[1].imageUrl, thumbnailEntries[1].url, thumbnailEntries[1].iconUrl)
-		local normalizedThumbnailUrl = normalizeImageSource(thumbnailUrl)
+		local thumbnailUrl = firstNonEmpty(thumbnailEntries[1].iconUrl, thumbnailEntries[1].imageUrl, thumbnailEntries[1].url)
+		local normalizedThumbnailUrl = getSquareImageSource(thumbnailUrl)
 		if normalizedThumbnailUrl ~= "" then
 			return normalizedThumbnailUrl
 		end
+	end
+
+	local universeId = tonumber(game.universeId) or tonumber(game.gameId)
+	if universeId and universeId > 0 then
+		return buildGameIconThumbnail(universeId)
 	end
 
 	return ""
@@ -421,6 +450,7 @@ local function buildCard(scroll, template, game, layoutOrder)
 	card.Visible = true
 	card.LayoutOrder = layoutOrder
 	card.Parent = scroll
+	applyManualCardLayout(scroll, template, card, layoutOrder)
 
 	local refs = getRefs(card, CARD_REFS)
 	local ownerInfo = getOwnerInfo(game)
@@ -592,6 +622,62 @@ local function clearGeneratedCards(scroll, template)
 	end
 end
 
+local function applyManualCardLayout(scroll, template, card, layoutOrder)
+	if not scroll or not template or not card or getListLayout(scroll) then
+		return
+	end
+
+	local templateHeight = template.AbsoluteSize.Y > 0 and template.AbsoluteSize.Y or template.Size.Y.Offset
+	local templateWidth = template.AbsoluteSize.X > 0 and template.AbsoluteSize.X or template.Size.X.Offset
+	local spacing = 16
+
+	if templateHeight <= 0 then
+		templateHeight = 420
+	end
+
+	if templateWidth <= 0 then
+		templateWidth = scroll.AbsoluteSize.X > 0 and scroll.AbsoluteSize.X or 450
+	end
+
+	card.Position = UDim2.new(
+		template.Position.X.Scale,
+		template.Position.X.Offset,
+		0,
+		template.Position.Y.Offset + ((layoutOrder - 1) * (templateHeight + spacing))
+	)
+	card.Size = UDim2.new(template.Size.X.Scale, templateWidth, 0, templateHeight)
+end
+
+local function updateScrollCanvas(scroll, template, cardCount)
+	if not scroll then
+		return
+	end
+
+	local listLayout = getListLayout(scroll)
+	if listLayout then
+		task.defer(function()
+			if scroll.Parent and listLayout.Parent == scroll then
+				scroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y)
+			end
+		end)
+		return
+	end
+
+	local templateHeight = template and (template.AbsoluteSize.Y > 0 and template.AbsoluteSize.Y or template.Size.Y.Offset) or 0
+	local spacing = 16
+
+	if templateHeight <= 0 then
+		templateHeight = 420
+	end
+
+	local totalHeight = 0
+	if cardCount > 0 then
+		totalHeight = (cardCount * templateHeight) + ((cardCount - 1) * spacing)
+	end
+
+	scroll.CanvasSize = UDim2.new(0, 0, 0, totalHeight)
+end
+
 local function sortGames(games)
 	table.sort(games, function(a, b)
 		local aVisits = tonumber(a.visits) or 0
@@ -601,6 +687,21 @@ local function sortGames(games)
 		end
 		return aVisits > bVisits
 	end)
+end
+
+local function dedupeGames(games)
+	local dedupedGames = {}
+	local seenKeys = {}
+
+	for _, game in ipairs(games) do
+		local key = tostring(tonumber(game.universeId) or tonumber(game.gameId) or tonumber(game.rootPlaceId) or game.name or "")
+		if key ~= "" and not seenKeys[key] then
+			seenKeys[key] = true
+			table.insert(dedupedGames, game)
+		end
+	end
+
+	return dedupedGames
 end
 
 local function render()
@@ -624,10 +725,13 @@ local function render()
 	end
 
 	sortGames(games)
+	games = dedupeGames(games)
 
 	for index, game in ipairs(games) do
 		buildCard(scroll, template, game, index)
 	end
+
+	updateScrollCanvas(scroll, template, #games)
 end
 
 render()
