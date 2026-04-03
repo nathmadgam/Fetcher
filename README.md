@@ -1,11 +1,14 @@
 # Fetcher
 
-Fetcher is a small Express service plus a Roblox integration package for resolving public experience metadata by owner.
+Fetcher is a small Express service plus a Roblox integration package for resolving public Roblox metadata for owners and user profiles.
 
 ## Features
 
 - owner-to-games lookup for Roblox users and groups
+- user-profile lookup by Roblox user ID
 - enriched metrics, votes, favorites, ownership, and timestamps
+- public profile basics, counts, groups, badges, username history, social previews, presence, and avatar thumbnails
+- optional Bloxlink enrichment from Roblox user ID when a Bloxlink API key is configured
 - Roblox-native thumbnail content IDs in API responses
 - server-safe Roblox bootstrap flow that keeps secrets out of client code
 
@@ -122,6 +125,50 @@ Response highlights:
 
 The image fields now prefer Roblox-native `rbxthumb://...` content IDs. Debug-friendly CDN URLs are also included as `iconWebUrl`, `thumbnailWebUrl`, and `ownerImageWebUrl`.
 
+### `POST /profile`
+
+Request body:
+
+```json
+{
+  "userId": 1,
+  "include": {
+    "ownedGames": true,
+    "bloxlink": true
+  }
+}
+```
+
+Response highlights:
+
+- `basics.username`, `basics.displayName`, `basics.description`, `basics.created`
+- `counts.followers`, `counts.followings`, `counts.friends`
+- `images.headshot`, `images.avatar`
+- `groups.items[]`
+- `badges.items[]`
+- `usernameHistory.items[]`
+- `social.followersPreview.items[]`
+- `ownedGames.games[]`
+- `bloxlink`
+
+## Optional Environment Variables
+
+- `BLOXLINK_API_KEY`: enables optional Bloxlink enrichment on `/profile`
+- `BLOXLINK_GUILD_ID`: if set, uses the guild-specific Bloxlink `roblox-to-discord` route instead of the global route
+
+## Example Roblox Usage
+
+```lua
+local profile, err = fetcher:GetProfileByUserId(1)
+if not profile then
+	warn(err)
+	return
+end
+
+fetcher:PrintProfileResponse("[Fetcher/Profile]", profile)
+fetcher:BuildProfileFolder(game:GetService("ReplicatedStorage"), profile, "Profiles", true)
+```
+
 ## Development
 
 Syntax check:
@@ -135,6 +182,7 @@ npm run check
 - keep `API_SECRET` in environment variables on the API host
 - keep `ApiSecret` in Roblox server-only configuration
 - never place the API secret in client-only Roblox scripts
+- do not automate RoPro access; their Terms of Service prohibit automated access through APIs, bots, and scrapers
 
 ## License
 

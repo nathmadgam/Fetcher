@@ -22,12 +22,27 @@ local DEFAULT_CONFIGURATION = {
 		favorites = true,
 		icons = true,
 	},
+	ProfileInclude = {
+		basics = true,
+		counts = true,
+		images = true,
+		presence = true,
+		groups = true,
+		badges = true,
+		usernameHistory = true,
+		friendsPreview = true,
+		followersPreview = true,
+		followingsPreview = true,
+		ownedGames = true,
+		bloxlink = true,
+	},
 	Names = {
 		SharedModuleName = "Fetcher",
 		ReplicatedFolderName = "FetcherRemotes",
 		RequestFunctionName = "FetcherRequest",
 		ClientBootstrapName = "FetcherClient",
 		GamesFolderName = "Games",
+		ProfilesFolderName = "Profiles",
 	},
 	ClientSupport = true,
 	AutoInjectBootstrap = true,
@@ -364,6 +379,17 @@ function Fetcher:GetCurrentOwnerGames(includeOverride)
 	return nil, "Unsupported owner type."
 end
 
+function Fetcher:GetProfileByUserId(userId, includeOverride)
+	if type(userId) ~= "number" then
+		return nil, "userId must be a number."
+	end
+
+	return self:PostJson("/profile", {
+		userId = userId,
+		include = includeOverride or self.Configuration.ProfileInclude,
+	})
+end
+
 function Fetcher:GetCurrentOwnerIdentity()
 	local ownerType, ownerIdOrError = self:ResolveCurrentExperienceOwner()
 	if not ownerType then
@@ -419,6 +445,34 @@ function Fetcher:PrintOwnerGamesResponse(logPrefix, ownerGamesResponse)
 		print(prefix, "Playing:", gameRecord.playing)
 		print(prefix, "Created:", gameRecord.created)
 		print(prefix, "Updated:", gameRecord.updated)
+	end
+
+	return true
+end
+
+function Fetcher:PrintProfileResponse(logPrefix, profileResponse)
+	local prefix = logPrefix or "[Fetcher]"
+
+	if type(profileResponse) ~= "table" then
+		warn(prefix .. " Invalid profile response.")
+		return false
+	end
+
+	local basics = profileResponse.basics or {}
+	local counts = profileResponse.counts or {}
+	local presence = profileResponse.presence or {}
+
+	print(prefix, "User ID:", profileResponse.userId or basics.userId or 0)
+	print(prefix, "Username:", basics.username or basics.name or "Unknown")
+	print(prefix, "Display Name:", basics.displayName or basics.username or "Unknown")
+	print(prefix, "Created:", basics.created or "Unknown")
+	print(prefix, "Followers:", counts.followers or 0)
+	print(prefix, "Following:", counts.followings or 0)
+	print(prefix, "Friends:", counts.friends or 0)
+	print(prefix, "Presence:", presence.lastLocation or "Unknown")
+
+	if profileResponse.ownedGames and profileResponse.ownedGames.totalGames ~= nil then
+		print(prefix, "Owned Games:", profileResponse.ownedGames.totalGames)
 	end
 
 	return true
@@ -497,6 +551,112 @@ function Fetcher:BuildOwnerGamesFolder(parent, ownerGamesResponse, folderName, c
 	return container
 end
 
+function Fetcher:BuildProfileFolder(parent, profileResponse, folderName, clearExisting)
+	if not parent then
+		return nil, "Parent is required."
+	end
+
+	if type(profileResponse) ~= "table" then
+		return nil, "profileResponse must be a table."
+	end
+
+	local containerName = folderName or "Profile"
+	local container = findChildByNameAndClass(parent, containerName, "Folder")
+
+	if not container then
+		container = Instance.new("Folder")
+		container.Name = containerName
+		container.Parent = parent
+	end
+
+	if clearExisting ~= false then
+		self:ClearChildren(container)
+	end
+
+	local basics = profileResponse.basics or {}
+	local counts = profileResponse.counts or {}
+	local images = profileResponse.images or {}
+	local presence = profileResponse.presence or {}
+	local bloxlink = profileResponse.bloxlink or {}
+
+	self:CreateValueObject("IntValue", "UserId", tonumber(profileResponse.userId or basics.userId) or 0, container)
+	self:CreateValueObject("StringValue", "Username", tostring(basics.username or basics.name or ""), container)
+	self:CreateValueObject("StringValue", "DisplayName", tostring(basics.displayName or basics.username or ""), container)
+	self:CreateValueObject("StringValue", "Description", tostring(basics.description or ""), container)
+	self:CreateValueObject("StringValue", "Created", tostring(basics.created or ""), container)
+	self:CreateValueObject("BoolValue", "HasVerifiedBadge", basics.hasVerifiedBadge == true, container)
+	self:CreateValueObject("BoolValue", "IsBanned", basics.isBanned == true, container)
+	self:CreateValueObject("StringValue", "ProfileUrl", tostring(profileResponse.profileUrl or basics.profileUrl or ""), container)
+	self:CreateValueObject("IntValue", "FriendsCount", tonumber(counts.friends) or 0, container)
+	self:CreateValueObject("IntValue", "FollowersCount", tonumber(counts.followers) or 0, container)
+	self:CreateValueObject("IntValue", "FollowingsCount", tonumber(counts.followings) or 0, container)
+	self:CreateValueObject("StringValue", "HeadshotImageUrl", tostring(images.headshot and images.headshot.imageUrl or ""), container)
+	self:CreateValueObject("StringValue", "HeadshotWebUrl", tostring(images.headshot and images.headshot.webUrl or ""), container)
+	self:CreateValueObject("StringValue", "AvatarImageUrl", tostring(images.avatar and images.avatar.imageUrl or ""), container)
+	self:CreateValueObject("StringValue", "AvatarWebUrl", tostring(images.avatar and images.avatar.webUrl or ""), container)
+	self:CreateValueObject("StringValue", "PresenceJson", encodeJson(presence), container)
+	self:CreateValueObject("StringValue", "BloxlinkJson", encodeJson(bloxlink), container)
+	self:CreateValueObject("StringValue", "ProfileJson", encodeJson(profileResponse), container)
+
+	local groupsFolder = Instance.new("Folder")
+	groupsFolder.Name = "Groups"
+	groupsFolder.Parent = container
+
+	for index, groupRecord in ipairs(((profileResponse.groups or {}).items or {})) do
+		local groupFolder = Instance.new("Folder")
+		groupFolder.Name = tostring(groupRecord.name or ("Group_" .. tostring(index)))
+		groupFolder.Parent = groupsFolder
+
+		self:CreateValueObject("IntValue", "GroupId", tonumber(groupRecord.id) or 0, groupFolder)
+		self:CreateValueObject("StringValue", "Name", tostring(groupRecord.name or ""), groupFolder)
+		self:CreateValueObject("IntValue", "MemberCount", tonumber(groupRecord.memberCount) or 0, groupFolder)
+		self:CreateValueObject("StringValue", "RoleName", tostring(groupRecord.roleName or ""), groupFolder)
+		self:CreateValueObject("IntValue", "RoleRank", tonumber(groupRecord.roleRank) or 0, groupFolder)
+	end
+
+	local historyFolder = Instance.new("Folder")
+	historyFolder.Name = "UsernameHistory"
+	historyFolder.Parent = container
+
+	for index, username in ipairs(((profileResponse.usernameHistory or {}).items or {})) do
+		self:CreateValueObject("StringValue", tostring(index), tostring(username), historyFolder)
+	end
+
+	local function buildPreviewFolder(previewName, previewData)
+		local previewFolder = Instance.new("Folder")
+		previewFolder.Name = previewName
+		previewFolder.Parent = container
+
+		for index, entry in ipairs((previewData and previewData.items) or {}) do
+			local entryFolder = Instance.new("Folder")
+			entryFolder.Name = tostring(entry.username or entry.name or ("User_" .. tostring(index)))
+			entryFolder.Parent = previewFolder
+
+			self:CreateValueObject("IntValue", "UserId", tonumber(entry.userId or entry.id) or 0, entryFolder)
+			self:CreateValueObject("StringValue", "Username", tostring(entry.username or entry.name or ""), entryFolder)
+			self:CreateValueObject("StringValue", "DisplayName", tostring(entry.displayName or entry.username or ""), entryFolder)
+			self:CreateValueObject("StringValue", "ImageUrl", tostring(entry.imageUrl or ""), entryFolder)
+			self:CreateValueObject("StringValue", "ImageWebUrl", tostring(entry.imageWebUrl or ""), entryFolder)
+		end
+	end
+
+	local social = profileResponse.social or {}
+	buildPreviewFolder("FriendsPreview", social.friendsPreview)
+	buildPreviewFolder("FollowersPreview", social.followersPreview)
+	buildPreviewFolder("FollowingsPreview", social.followingsPreview)
+
+	if profileResponse.ownedGames then
+		self:BuildOwnerGamesFolder(
+			container,
+			profileResponse.ownedGames,
+			self.Configuration.Names.GamesFolderName or "Games",
+			true
+		)
+	end
+
+	return container
+end
+
 function Fetcher:GetRemotesFolder()
 	local folderName = self.Configuration.Names.ReplicatedFolderName
 	local existingFolder = findChildByNameAndClass(ReplicatedStorage, folderName, "Folder")
@@ -559,6 +719,10 @@ function Fetcher:HandleClientRequest(requestPayload)
 		return self:GetOwnerGamesByGroupId(payload.OwnerGroupId, payload.Include)
 	end
 
+	if actionName == "GetProfileByUserId" then
+		return self:GetProfileByUserId(payload.UserId, payload.Include)
+	end
+
 	if actionName == "BuildGamesFolder" then
 		local response, responseError = self:GetCurrentOwnerGames(payload.Include)
 		if not response then
@@ -580,6 +744,30 @@ function Fetcher:HandleClientRequest(requestPayload)
 			Success = true,
 			FolderName = folder.Name,
 			TotalGames = response.totalGames,
+		}
+	end
+
+	if actionName == "BuildProfileFolder" then
+		local response, responseError = self:GetProfileByUserId(payload.UserId, payload.Include)
+		if not response then
+			return nil, responseError
+		end
+
+		local folder, folderError = self:BuildProfileFolder(
+			ReplicatedStorage,
+			response,
+			payload.FolderName or self.Configuration.Names.ProfilesFolderName or "Profiles",
+			true
+		)
+
+		if not folder then
+			return nil, folderError
+		end
+
+		return {
+			Success = true,
+			FolderName = folder.Name,
+			UserId = response.userId,
 		}
 	end
 
@@ -736,11 +924,32 @@ function Fetcher:GetClientCallable()
 		})
 	end
 
+	function clientCallable:GetProfileByUserId(userId, includeOverride)
+		return requestRemote:InvokeServer({
+			Action = "GetProfileByUserId",
+			Payload = {
+				UserId = userId,
+				Include = includeOverride,
+			},
+		})
+	end
+
 	function clientCallable:BuildGamesFolder(includeOverride)
 		return requestRemote:InvokeServer({
 			Action = "BuildGamesFolder",
 			Payload = {
 				Include = includeOverride,
+			},
+		})
+	end
+
+	function clientCallable:BuildProfileFolder(userId, includeOverride, folderName)
+		return requestRemote:InvokeServer({
+			Action = "BuildProfileFolder",
+			Payload = {
+				UserId = userId,
+				Include = includeOverride,
+				FolderName = folderName,
 			},
 		})
 	end

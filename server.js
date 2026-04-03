@@ -5,6 +5,8 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const API_SECRET = process.env.API_SECRET;
+const BLOXLINK_API_KEY = process.env.BLOXLINK_API_KEY || "";
+const BLOXLINK_GUILD_ID = process.env.BLOXLINK_GUILD_ID || "";
 
 const DEFAULT_INCLUDE = {
   details: true,
@@ -13,7 +15,25 @@ const DEFAULT_INCLUDE = {
   icons: true
 };
 
+const DEFAULT_PROFILE_INCLUDE = {
+  basics: true,
+  counts: true,
+  images: true,
+  presence: true,
+  groups: true,
+  badges: true,
+  usernameHistory: true,
+  friendsPreview: true,
+  followersPreview: true,
+  followingsPreview: true,
+  ownedGames: true,
+  bloxlink: true
+};
+
 const FAVORITES_CONCURRENCY = 5;
+const SOCIAL_PREVIEW_LIMIT = 10;
+const BADGES_PREVIEW_LIMIT = 10;
+const USERNAME_HISTORY_LIMIT = 10;
 
 function getRequestSecret(req) {
   const headerSecret = req.headers["x-api-secret"];
@@ -80,6 +100,17 @@ async function fetchJson(url) {
   return JSON.parse(await fetchText(url));
 }
 
+async function fetchJsonWithOptions(url, options = {}) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Roblox API ${response.status}: ${text}`);
+  }
+
+  return JSON.parse(text);
+}
+
 async function fetchJsonSafe(url, fallbackValue) {
   try {
     return await fetchJson(url);
@@ -90,6 +121,421 @@ async function fetchJsonSafe(url, fallbackValue) {
 
     throw error;
   }
+}
+
+async function fetchJsonWithOptionsSafe(url, options, fallbackValue) {
+  try {
+    return await fetchJsonWithOptions(url, options);
+  } catch (error) {
+    const errorText = String(error);
+    if (errorText.includes("Roblox API 429") || errorText.includes(" 404:")) {
+      return fallbackValue;
+    }
+
+    throw error;
+  }
+}
+
+function normalizeProfileInclude(input = {}) {
+  const includeAll = input.includeAll === true;
+
+  return {
+    basics: includeAll || input.basics !== false,
+    counts: includeAll || input.counts !== false,
+    images: includeAll || input.images !== false,
+    presence: includeAll || input.presence !== false,
+    groups: includeAll || input.groups !== false,
+    badges: includeAll || input.badges !== false,
+    usernameHistory: includeAll || input.usernameHistory !== false,
+    friendsPreview: includeAll || input.friendsPreview !== false,
+    followersPreview: includeAll || input.followersPreview !== false,
+    followingsPreview: includeAll || input.followingsPreview !== false,
+    ownedGames: includeAll || input.ownedGames !== false,
+    bloxlink: includeAll || input.bloxlink !== false
+  };
+}
+
+function buildProfileUrl(userId) {
+  return `https://www.roblox.com/users/${userId}/profile`;
+}
+
+function buildAvatarHeadshotContentId(userId) {
+  return userId
+    ? `rbxthumb://type=AvatarHeadShot&id=${userId}&w=420&h=420`
+    : null;
+}
+
+function buildAvatarBustContentId(userId) {
+  return userId
+    ? `rbxthumb://type=AvatarBust&id=${userId}&w=420&h=420`
+    : null;
+}
+
+function buildAvatarContentId(userId) {
+  return userId
+    ? `rbxthumb://type=Avatar&id=${userId}&w=720&h=720`
+    : null;
+}
+
+function buildSocialLinkContentId(userId) {
+  return userId
+    ? `rbxthumb://type=AvatarHeadShot&id=${userId}&w=150&h=150`
+    : null;
+}
+
+async function getUsersByIds(userIds) {
+  const normalizedIds = Array.from(
+    new Set(
+      (userIds || [])
+        .map((userId) => Number(userId))
+        .filter((userId) => Number.isInteger(userId) && userId > 0)
+    )
+  );
+
+  if (normalizedIds.length === 0) {
+    return [];
+  }
+
+  const data = await fetchJsonWithOptions(
+    "https://users.roblox.com/v1/users",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        userIds: normalizedIds
+      })
+    }
+  );
+
+  return data.data || [];
+}
+
+async function getUserHeadshotsByIds(userIds, size = "150x150") {
+  const normalizedIds = Array.from(
+    new Set(
+      (userIds || [])
+        .map((userId) => Number(userId))
+        .filter((userId) => Number.isInteger(userId) && userId > 0)
+    )
+  );
+
+  if (normalizedIds.length === 0) {
+    return new Map();
+  }
+
+  const data = await fetchJsonSafe(
+    `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${normalizedIds.join(",")}&size=${size}&format=Png&isCircular=false`,
+    { data: [] }
+  );
+
+  const imageMap = new Map();
+  for (const entry of data.data || []) {
+    imageMap.set(entry.targetId, entry.imageUrl ?? null);
+  }
+
+  return imageMap;
+}
+
+async function getUserProfileBasics(userId) {
+  return fetchJson(`https://users.roblox.com/v1/users/${userId}`);
+}
+
+async function getUserAvatarImages(userId) {
+  const [headshotData, bustData, avatarData] = await Promise.all([
+    fetchJsonSafe(
+      `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=420x420&format=Png&isCircular=false`,
+      { data: [] }
+    ),
+    fetchJsonSafe(
+      `https://thumbnails.roblox.com/v1/users/avatar-bust?userIds=${userId}&size=420x420&format=Png&isCircular=false`,
+      { data: [] }
+    ),
+    fetchJsonSafe(
+      `https://thumbnails.roblox.com/v1/users/avatar?userIds=${userId}&size=720x720&format=Png&isCircular=false`,
+      { data: [] }
+    )
+  ]);
+
+  const headshotUrl = headshotData.data?.[0]?.imageUrl ?? null;
+  const bustUrl = bustData.data?.[0]?.imageUrl ?? null;
+  const avatarUrl = avatarData.data?.[0]?.imageUrl ?? null;
+
+  return {
+    headshot: {
+      url: buildAvatarHeadshotContentId(userId),
+      imageUrl: buildAvatarHeadshotContentId(userId),
+      webUrl: headshotUrl,
+      webImageUrl: headshotUrl
+    },
+    bust: {
+      url: buildAvatarBustContentId(userId),
+      imageUrl: buildAvatarBustContentId(userId),
+      webUrl: bustUrl,
+      webImageUrl: bustUrl
+    },
+    avatar: {
+      url: buildAvatarContentId(userId),
+      imageUrl: buildAvatarContentId(userId),
+      webUrl: avatarUrl,
+      webImageUrl: avatarUrl
+    }
+  };
+}
+
+async function getUserCounts(userId) {
+  const [friends, followers, followings] = await Promise.all([
+    fetchJsonSafe(`https://friends.roblox.com/v1/users/${userId}/friends/count`, { count: null }),
+    fetchJsonSafe(`https://friends.roblox.com/v1/users/${userId}/followers/count`, { count: null }),
+    fetchJsonSafe(`https://friends.roblox.com/v1/users/${userId}/followings/count`, { count: null })
+  ]);
+
+  return {
+    friends: friends.count ?? null,
+    followers: followers.count ?? null,
+    followings: followings.count ?? null
+  };
+}
+
+async function getUserPresence(userId) {
+  const data = await fetchJsonWithOptionsSafe(
+    "https://presence.roblox.com/v1/presence/users",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        userIds: [userId]
+      })
+    },
+    { userPresences: [] }
+  );
+
+  return data.userPresences?.[0] ?? null;
+}
+
+async function getUserGroups(userId) {
+  const data = await fetchJsonSafe(
+    `https://groups.roblox.com/v2/users/${userId}/groups/roles`,
+    { data: [] }
+  );
+
+  return (data.data || []).map((entry) => ({
+    id: entry.group?.id ?? null,
+    name: entry.group?.name ?? null,
+    memberCount: entry.group?.memberCount ?? null,
+    hasVerifiedBadge: entry.group?.hasVerifiedBadge ?? false,
+    roleId: entry.role?.id ?? null,
+    roleName: entry.role?.name ?? null,
+    roleRank: entry.role?.rank ?? null
+  }));
+}
+
+async function getUserBadges(userId, limit = BADGES_PREVIEW_LIMIT) {
+  const data = await fetchJsonSafe(
+    `https://badges.roblox.com/v1/users/${userId}/badges?limit=${limit}&sortOrder=Desc`,
+    { data: [], nextPageCursor: null, previousPageCursor: null }
+  );
+
+  return {
+    totalReturned: (data.data || []).length,
+    nextPageCursor: data.nextPageCursor ?? null,
+    previousPageCursor: data.previousPageCursor ?? null,
+    items: (data.data || []).map((badge) => ({
+      id: badge.id ?? null,
+      name: badge.name ?? null,
+      description: badge.description ?? "",
+      enabled: badge.enabled ?? null
+    }))
+  };
+}
+
+async function getUsernameHistory(userId, limit = USERNAME_HISTORY_LIMIT) {
+  const data = await fetchJsonSafe(
+    `https://users.roblox.com/v1/users/${userId}/username-history?limit=${limit}&sortOrder=Desc`,
+    { data: [], nextPageCursor: null, previousPageCursor: null }
+  );
+
+  return {
+    totalReturned: (data.data || []).length,
+    nextPageCursor: data.nextPageCursor ?? null,
+    previousPageCursor: data.previousPageCursor ?? null,
+    items: (data.data || []).map((entry) => entry.name).filter(Boolean)
+  };
+}
+
+async function getSocialPreview(kind, userId, limit = SOCIAL_PREVIEW_LIMIT) {
+  let url = "";
+
+  if (kind === "friends") {
+    url = `https://friends.roblox.com/v1/users/${userId}/friends?userSort=Alphabetical&limit=${limit}`;
+  } else if (kind === "followers") {
+    url = `https://friends.roblox.com/v1/users/${userId}/followers?sortOrder=Desc&limit=${limit}`;
+  } else if (kind === "followings") {
+    url = `https://friends.roblox.com/v1/users/${userId}/followings?sortOrder=Desc&limit=${limit}`;
+  } else {
+    return {
+      totalReturned: 0,
+      nextPageCursor: null,
+      previousPageCursor: null,
+      items: []
+    };
+  }
+
+  const page = await fetchJsonSafe(url, {
+    data: [],
+    nextPageCursor: null,
+    previousPageCursor: null
+  });
+
+  const ids = (page.data || [])
+    .map((entry) => Number(entry.id))
+    .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
+
+  const [users, headshots] = await Promise.all([
+    getUsersByIds(ids),
+    getUserHeadshotsByIds(ids)
+  ]);
+
+  const usersById = new Map(users.map((entry) => [entry.id, entry]));
+
+  return {
+    totalReturned: ids.length,
+    nextPageCursor: page.nextPageCursor ?? null,
+    previousPageCursor: page.previousPageCursor ?? null,
+    items: ids.map((entryId) => {
+      const user = usersById.get(entryId) || {};
+      const webImageUrl = headshots.get(entryId) ?? null;
+
+      return {
+        id: entryId,
+        userId: entryId,
+        username: user.name ?? null,
+        name: user.name ?? null,
+        displayName: user.displayName ?? user.name ?? null,
+        hasVerifiedBadge: user.hasVerifiedBadge ?? false,
+        profileUrl: buildProfileUrl(entryId),
+        image: buildSocialLinkContentId(entryId),
+        imageUrl: buildSocialLinkContentId(entryId),
+        imageWebUrl: webImageUrl
+      };
+    })
+  };
+}
+
+async function getBloxlinkProfileByRobloxUserId(robloxUserId) {
+  if (!BLOXLINK_API_KEY) {
+    return {
+      enabled: false,
+      configured: false,
+      mode: null,
+      data: null
+    };
+  }
+
+  const mode = BLOXLINK_GUILD_ID ? "guild" : "global";
+  const url = mode === "guild"
+    ? `https://api.blox.link/v4/public/guilds/${encodeURIComponent(BLOXLINK_GUILD_ID)}/roblox-to-discord/${robloxUserId}`
+    : `https://api.blox.link/v4/public/roblox-to-discord/${robloxUserId}`;
+
+  const data = await fetchJsonWithOptionsSafe(
+    url,
+    {
+      headers: {
+        Authorization: BLOXLINK_API_KEY
+      }
+    },
+    null
+  );
+
+  return {
+    enabled: true,
+    configured: true,
+    mode,
+    guildId: BLOXLINK_GUILD_ID || null,
+    data
+  };
+}
+
+async function buildUserProfileResponse(userId, include = DEFAULT_PROFILE_INCLUDE) {
+  const numericUserId = Number(userId);
+  if (!Number.isInteger(numericUserId) || numericUserId <= 0) {
+    throw new Error("userId must be a positive integer");
+  }
+
+  const [
+    basics,
+    counts,
+    images,
+    presence,
+    groups,
+    badges,
+    usernameHistory,
+    friendsPreview,
+    followersPreview,
+    followingsPreview,
+    ownedGames,
+    bloxlink
+  ] = await Promise.all([
+    include.basics ? getUserProfileBasics(numericUserId) : Promise.resolve(null),
+    include.counts ? getUserCounts(numericUserId) : Promise.resolve(null),
+    include.images ? getUserAvatarImages(numericUserId) : Promise.resolve(null),
+    include.presence ? getUserPresence(numericUserId) : Promise.resolve(null),
+    include.groups ? getUserGroups(numericUserId) : Promise.resolve([]),
+    include.badges ? getUserBadges(numericUserId) : Promise.resolve(null),
+    include.usernameHistory ? getUsernameHistory(numericUserId) : Promise.resolve(null),
+    include.friendsPreview ? getSocialPreview("friends", numericUserId) : Promise.resolve(null),
+    include.followersPreview ? getSocialPreview("followers", numericUserId) : Promise.resolve(null),
+    include.followingsPreview ? getSocialPreview("followings", numericUserId) : Promise.resolve(null),
+    include.ownedGames ? buildOwnerGamesResponse("User", numericUserId, DEFAULT_INCLUDE) : Promise.resolve(null),
+    include.bloxlink ? getBloxlinkProfileByRobloxUserId(numericUserId) : Promise.resolve(null)
+  ]);
+
+  if (!basics && include.basics) {
+    throw new Error("Profile basics could not be resolved");
+  }
+
+  return {
+    userId: numericUserId,
+    requestedAt: new Date().toISOString(),
+    profileUrl: buildProfileUrl(numericUserId),
+    include,
+    basics: basics
+      ? {
+          id: basics.id ?? numericUserId,
+          userId: basics.id ?? numericUserId,
+          username: basics.name ?? null,
+          name: basics.name ?? null,
+          displayName: basics.displayName ?? basics.name ?? null,
+          description: basics.description ?? "",
+          created: basics.created ?? null,
+          isBanned: basics.isBanned ?? null,
+          hasVerifiedBadge: basics.hasVerifiedBadge ?? false,
+          externalAppDisplayName: basics.externalAppDisplayName ?? null,
+          profileUrl: buildProfileUrl(numericUserId)
+        }
+      : null,
+    counts,
+    images,
+    presence,
+    groups: include.groups
+      ? {
+          totalReturned: groups.length,
+          items: groups
+        }
+      : null,
+    badges,
+    usernameHistory,
+    social: {
+      friendsPreview,
+      followersPreview,
+      followingsPreview
+    },
+    ownedGames,
+    bloxlink
+  };
 }
 
 async function mapWithConcurrency(items, concurrency, mapper) {
@@ -625,6 +1071,7 @@ function docsHtml() {
         <li><code>GET /health</code> returns service health and secret configuration state.</li>
         <li><code>GET /docs</code> returns this HTML documentation page.</li>
         <li><code>POST /owner-games</code> returns an owner's public Roblox games with extended metadata.</li>
+        <li><code>POST /profile</code> returns a public Roblox user profile bundle by user ID.</li>
       </ul>
     </section>
 
@@ -647,6 +1094,18 @@ function docsHtml() {
         <li><code>games[].iconImageUrl</code>: resolved game icon.</li>
       </ul>
     </section>
+
+    <section class="card">
+      <h2>Profile Request Example</h2>
+      <pre>{
+  "userId": 1,
+  "include": {
+    "ownedGames": true,
+    "bloxlink": true
+  }
+}</pre>
+      <p>The profile response can include basics, avatar images, counts, presence, groups, badges, username history, social previews, owned games, and optional Bloxlink enrichment.</p>
+    </section>
   </div>
 </body>
 </html>`;
@@ -659,7 +1118,7 @@ app.get("/", (req, res) => {
     status: "online",
     docs: "/docs",
     health: "/health",
-    endpoints: ["/owner-games"]
+    endpoints: ["/owner-games", "/profile"]
   });
 });
 
@@ -695,6 +1154,34 @@ app.post("/owner-games", async (req, res) => {
     }
 
     const response = await buildOwnerGamesResponse(ownerType, resolvedOwnerId, normalizeInclude(include));
+    return res.json(response);
+  } catch (error) {
+    return res.status(500).json({
+      error: "Server error",
+      details: String(error)
+    });
+  }
+});
+
+app.post("/profile", async (req, res) => {
+  if (!requireAuth(req, res)) {
+    return;
+  }
+
+  try {
+    const {
+      userId,
+      targetUserId,
+      ownerUserId,
+      include = DEFAULT_PROFILE_INCLUDE
+    } = req.body || {};
+
+    const resolvedUserId = userId ?? targetUserId ?? ownerUserId;
+    if (!resolvedUserId) {
+      return res.status(400).json({ error: "Missing userId" });
+    }
+
+    const response = await buildUserProfileResponse(resolvedUserId, normalizeProfileInclude(include));
     return res.json(response);
   } catch (error) {
     return res.status(500).json({
